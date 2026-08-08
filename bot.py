@@ -45,6 +45,16 @@ import re
 # This is a heads-up, not an authority: the maintainer's assignment is the real signal. Erring
 # toward catching more is fine as long as an explicit negation still wins.
 
+# Reported or deferred claims: someone describing an invitation to claim, or saying they will
+# claim later, is not claiming now. Kept deliberately narrow — over-detecting a claim only
+# costs us a missed opportunity, while missing a real one risks claiming what someone holds,
+# which forfeits every claim we have.
+CLAIM_NOT_NOW = (
+    "invited me to claim", "asked me to claim", "invited me to take",
+    "would claim", "will claim this once", "claim this once",
+    "as soon as", "statement of intent",
+)
+
 # Explicit "not claiming" — these veto a match no matter what else the comment says.
 CLAIM_NEGATIONS = (
     "not claiming", "not a claim", "won't claim", "will not claim", "no claim",
@@ -74,10 +84,28 @@ CLAIM_PATTERNS = tuple(re.compile(p, re.I) for p in (
 ))
 
 
+def _unquoted(text):
+    """
+    Text with quoted material removed.
+
+    People quote the wording they are answering — ColinkaMir cited the maintainer\'s own
+    "Claim it here if you want to take it" while explicitly NOT claiming, and every pattern
+    matched inside the quotation. A real claim is not written inside quotes, so dropping
+    quoted spans, blockquotes and code removes the false positives without losing a claim.
+    """
+    t = re.sub(r"^\s*>.*$", " ", text or "", flags=re.M)   # markdown blockquotes
+    t = re.sub(r"`[^`]*`", " ", t)                          # inline code
+    t = re.sub(r"\"[^\"]*\"", " ", t)                        # straight double quotes
+    t = re.sub(r"[\u201c\u201d][^\u201c\u201d]*[\u201c\u201d]", " ", t)  # curly quotes
+    return t
+
+
 def is_claim(body):
     """True if a comment reads as taking the issue. An explicit negation always wins."""
-    b = (body or "").lower()
+    b = _unquoted(body or "").lower()
     if any(neg in b for neg in CLAIM_NEGATIONS):
+        return False
+    if any(x in b for x in CLAIM_NOT_NOW):
         return False
     return any(p.search(b) for p in CLAIM_PATTERNS)
 
@@ -86,7 +114,12 @@ def is_claim(body):
 # the slot ("Releasing this claim ..."). After a release the issue is free again, so a claim
 # older than the newest release does not count.
 CLAIM_RELEASES = ("releasing this", "releasing the claim", "releasing this claim",
-                  "released this claim", "release this claim", "releasing my claim")
+                  "released this claim", "release this claim", "releasing my claim",
+                  # A claim is also given up by withdrawing it, which reads nothing like
+                  # "releasing" — lora-sys withdrew nad-agent#46 and the issue stayed marked
+                  # as held because only the word "releasing" was recognised.
+                  "withdrawing my claim", "withdraw my claim", "withdrawing this claim",
+                  "i withdraw", "no longer claiming", "dropping this claim")
 
 
 def is_release(body):
