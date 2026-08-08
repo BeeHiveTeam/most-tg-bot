@@ -109,7 +109,7 @@ T = {
   "btn_pr":     {"en": "🔀 Our PR",  "ru": "🔀 Наш PR",     "de": "🔀 Unser PR"},
   "btn_rate":   {"en": "📈 Quota",   "ru": "📈 Квота",      "de": "📈 Kontingent"},
   "btn_help":   {"en": "❓ Help",     "ru": "❓ Помощь",     "de": "❓ Hilfe"},
-  "btn_lang":   {"en": "🌐 RU",      "ru": "🌐 DE",         "de": "🌐 EN"},
+  "btn_lang":   {"en": "🌐 EN",      "ru": "🌐 RU",         "de": "🌐 DE"},  # current language
 
   "a_new":      {"en": "🆕 <b>NEW ISSUE</b>", "ru": "🆕 <b>НОВАЯ ЗАДАЧА</b>", "de": "🆕 <b>NEUES ISSUE</b>"},
   "a_claimed":  {"en": "🔒 <b>CLAIMED</b> by", "ru": "🔒 <b>ЗАНЯЛИ</b> —", "de": "🔒 <b>VERGEBEN</b> an"},
@@ -690,7 +690,10 @@ def dispatch(cmd, state):
         order = ["en", "ru", "de"]
         _lang = order[(order.index(_lang) + 1) % len(order)] if _lang in order else "en"
         state["lang"] = _lang
-        return tr("lang_set")
+        # Show substantial content in the new language right away. A one-line confirmation left
+        # the list the user was looking at unchanged (Telegram does not re-render old messages),
+        # so the switch looked like it did nothing.
+        return tr("lang_set") + "\n\n" + tr("help")
     if cmd.startswith("free"):
         return cmd_free(state)
     if cmd.startswith("taken"):
