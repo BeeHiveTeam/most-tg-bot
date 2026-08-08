@@ -86,8 +86,7 @@ def is_claim(body):
 # the slot ("Releasing this claim ..."). After a release the issue is free again, so a claim
 # older than the newest release does not count.
 CLAIM_RELEASES = ("releasing this", "releasing the claim", "releasing this claim",
-                  "released this", "release this claim", "open for anyone again",
-                  "open again", "up for anyone")
+                  "released this claim", "release this claim", "releasing my claim")
 
 
 def is_release(body):
@@ -122,6 +121,14 @@ TG_TOKEN = CFG["TG_TOKEN"]
 TG_CHAT = CFG["TG_CHAT_ID"]
 GH_TOKEN = CFG.get("GH_TOKEN", "")
 REPOS = [r.strip() for r in CFG.get("REPOS", ",".join(DEFAULT_REPOS)).split(",") if r.strip()]
+# A repo must be "owner/name"; a bare token would break every per-repo path. Drop it loudly
+# rather than crash mid-poll on the first request.
+_bad = [r for r in REPOS if r.count("/") != 1]
+if _bad:
+    print(f"ignoring malformed REPOS entries (need owner/name): {_bad}", flush=True)
+    REPOS = [r for r in REPOS if r.count("/") == 1]
+if not REPOS:
+    sys.exit("no valid repositories to watch (REPOS)")
 WATCH_PR = CFG.get("WATCH_PR", "").strip()
 # Pool maintainers post claim bookkeeping ("approved, it's yours", "one claimed issue at a
 # time") that can read like a claim. Their comments are never a fresh claim. Comma-separated
@@ -204,9 +211,36 @@ KEYBOARD = json.dumps({"inline_keyboard": [
 ]})
 
 
+def _split(text, limit=3900):
+    """
+    Split into Telegram-sized parts on line boundaries, never mid-line.
+
+    A blind slice at N characters can land inside an <a href="..."> tag; Telegram then rejects
+    the whole part with "can't parse entities" and the operator sees half a list or nothing.
+    Every alert and command output here is newline-separated, so breaking on newlines keeps
+    each tag intact. A single line longer than the limit (never produced here) is hard-cut as
+    a last resort.
+    """
+    parts, cur = [], ""
+    for line in text.split("\n"):
+        if len(line) > limit:
+            if cur:
+                parts.append(cur); cur = ""
+            for i in range(0, len(line), limit):
+                parts.append(line[i:i + limit])
+            continue
+        if len(cur) + len(line) + 1 > limit:
+            parts.append(cur); cur = line
+        else:
+            cur = f"{cur}\n{line}" if cur else line
+    if cur:
+        parts.append(cur)
+    return parts or [""]
+
+
 def say(text, kb=True):
     """Отправить сообщение. Кнопки цепляются к последней части длинного текста."""
-    chunks = [text[i:i + 3900] for i in range(0, len(text), 3900)] or [""]
+    chunks = _split(text)
     for n, chunk in enumerate(chunks):
         params = dict(chat_id=TG_CHAT, text=chunk, parse_mode="HTML",
                       disable_web_page_preview="true")
@@ -221,19 +255,26 @@ def esc(s):
 
 # ── github ──────────────────────────────────────────────────────────────────
 
-def fetch_open(repo):
+def fetch_open(repo, max_pages=5):
     """
-    Open issues AND pull requests, from a single request.
+    Open issues AND pull requests, following pagination.
 
-    The /issues endpoint already returns PRs (each carries a "pull_request" key). We used to
-    throw them away; keeping them costs nothing and lets us alert when a rival opens a PR — a
-    sign they are about to earn a contribution day and free their claimed issue soon.
+    The /issues endpoint already returns PRs (each carries a "pull_request" key), so one call
+    gets both. per_page=100 covers most repos in a single request, but a busy one (moss is past
+    50 open items) can exceed a page — without following the next page the overflow is invisible:
+    never snapshotted, never alerted, never in /free. Follow up to max_pages so a large repo is
+    fully seen; the cap bounds the request cost.
     """
-    data, err = gh(f"/repos/{repo}/issues?state=open&per_page=100")
-    if err:
-        return None, None, err
-    issues = [i for i in data if "pull_request" not in i]
-    prs = [i for i in data if "pull_request" in i]
+    items = []
+    for page in range(1, max_pages + 1):
+        data, err = gh(f"/repos/{repo}/issues?state=open&per_page=100&page={page}")
+        if err:
+            return None, None, err
+        items.extend(data)
+        if len(data) < 100:
+            break
+    issues = [i for i in items if "pull_request" not in i]
+    prs = [i for i in items if "pull_request" in i]
     return issues, prs, None
 
 
@@ -241,9 +282,16 @@ def pr_snapshot(prs):
     return {str(p["number"]): {"title": p["title"], "author": p["user"]["login"]} for p in prs}
 
 
-def diff_prs(repo, old, new):
-    """Alert when a pull request is newly opened. Empty `old` = first sight, seed silently."""
-    if not old:
+def diff_prs(repo, old, new, seeded):
+    """
+    Alert when a pull request is newly opened.
+
+    `seeded` is the fix for a subtle miss: a repo with zero open PRs stores {}, which is
+    indistinguishable from "never polled" by truthiness. puddleswap and mipland sit at 0 PRs,
+    so their first PR would seed silently and never alert. The caller passes whether this repo
+    has been seen before, so an empty snapshot is no longer mistaken for a first sight.
+    """
+    if not seeded:
         return []
     out = []
     for num, cur in new.items():
@@ -305,9 +353,10 @@ def latest_claim_comment(repo, num):
 
 # ── diffing ─────────────────────────────────────────────────────────────────
 
-def diff_repo(repo, old, new):
-    """Alerts for one repo. `old` empty means first sight — seed silently, do not spam."""
-    if not old:
+def diff_repo(repo, old, new, seeded):
+    """Alerts for one repo. Unseeded repo seeds silently; an empty snapshot on a seen repo is
+    a real state, not a first sight (a repo can legitimately reach zero open issues)."""
+    if not seeded:
         return []
     out = []
     for num, cur in new.items():
@@ -331,29 +380,38 @@ def diff_repo(repo, old, new):
     return out
 
 
-def diff_comments(repo, old, new, budget):
+def diff_comments(repo, old, new, budget, state_claims):
     """
     Someone commenting on a free issue is the earliest signal there is — the assignee only
     appears once a maintainer approves, and by then it is decided. Costs one request per
     changed issue, so it is capped by `budget`.
     """
     out = []
+    # Who we have already flagged as claiming each issue, so a claimant's follow-up comment
+    # ("any update?") does not re-fire the same "✋ ПРОСЯТ ЗАЯВКУ" every cycle.
+    flagged = state_claims
     for num, cur in new.items():
         if budget[0] <= 0:
             break
         prev = old.get(num)
         if not prev or cur["comments"] <= prev["comments"] or cur["assignee"]:
             continue
-        # Our own claim is ours; a new comment on it (a maintainer reply, our own progress
-        # note) must not fire "someone is claiming this".
+        # Our own claim is ours; a new comment on it must not fire "someone is claiming this".
         if mine(repo, num):
             continue
         budget[0] -= 1
         hit = latest_claim_comment(repo, num)
+        key = f"{repo}#{num}"
         if hit:
             who, text = hit
+            if flagged.get(key) == who:
+                continue  # already alerted on this person's claim
+            flagged[key] = who
             out.append(f"✋ <b>ПРОСЯТ ЗАЯВКУ</b> — {esc(who)}, {esc(short(repo))} #{num}\n"
                        f"{esc(cur['title'])}\n<i>{esc(text)}</i>\n{issue_url(repo, num)}")
+        else:
+            # No claim in the comments — clear any stale flag so a real claim later still fires.
+            flagged.pop(key, None)
     return out
 
 
@@ -384,8 +442,13 @@ def check_pr(state):
         out.append(f"⚠️ <b>PR {esc(cur['state'].upper())}</b> {esc(WATCH_PR)}\n{link}")
     if cur["comments"] > prev["comments"]:
         out.append(f"💬 <b>Комментариев на PR: +{cur['comments'] - prev['comments']}</b> {esc(WATCH_PR)}\n{link}")
-    if prev["mergeable"] and cur["mergeable"] is False:
+    # GitHub returns mergeable=None while recomputing after a push, so a real conflict can
+    # arrive as True -> None -> False and slip past a naive prev/cur check. Track the last
+    # DEFINITE value instead of the immediately-previous one.
+    if cur["mergeable"] is False and state.get("pr_last_mergeable") is not False:
         out.append(f"⛔ <b>КОНФЛИКТЫ</b> на {esc(WATCH_PR)} — upstream ушёл вперёд, нужен ребейз\n{link}")
+    if cur["mergeable"] is not None:
+        state["pr_last_mergeable"] = cur["mergeable"]
     return out
 
 
@@ -406,7 +469,9 @@ def difficulty(labels):
 
 
 def short(repo):
-    return repo.split("/", 1)[1]
+    # "owner/name" -> "name". Falls back to the whole string if a misconfigured REPOS entry
+    # has no slash, rather than raising IndexError and killing the poll loop.
+    return repo.split("/", 1)[1] if "/" in repo else repo
 
 
 def mine(repo, num):
@@ -418,6 +483,7 @@ def cmd_free(state):
     blocks, total = [], 0
     for repo in REPOS:
         snap = state.get("repos", {}).get(repo, {})
+        flags = state.get("claim_flags", {})
         free = [(n, v) for n, v in snap.items() if not v["assignee"] and not mine(repo, n)]
         if not free:
             continue
@@ -427,7 +493,11 @@ def cmd_free(state):
             d = difficulty(v["labels"])
             star = "⭐ " if is_gfi(v["labels"]) else "• "
             tag = f" <i>[{esc(d)}]</i>" if d and not is_gfi(v["labels"]) else ""
-            rows.append(f'{star}<a href="{issue_url(repo, n)}">#{n}</a> {esc(v["title"][:64])}{tag}')
+            # No assignee, but someone claimed it in a comment (the pool approves in comments):
+            # mark it so the list does not read as genuinely open.
+            claimer = flags.get(f"{repo}#{n}")
+            note = f" <i>· claimed by {esc(claimer)}?</i>" if claimer else ""
+            rows.append(f'{star}<a href="{issue_url(repo, n)}">#{n}</a> {esc(v["title"][:64])}{tag}{note}')
         blocks.append("\n".join(rows))
     head = f"<b>🟢 СВОБОДНО — {total} задач</b>\n⭐ = good first issue"
     if MY_CLAIM:
@@ -569,9 +639,13 @@ def handle_commands(state):
         msg = upd.get("message") or {}
         if str((msg.get("chat") or {}).get("id")) != str(TG_CHAT):
             continue
-        text = (msg.get("text") or "").strip().split("@")[0].lower().lstrip("/")
-        if text:
-            say(dispatch(text, state))
+        raw = (msg.get("text") or "").strip()
+        # Only reply to explicit commands. Plain chatter in the alert channel must not draw a
+        # HELP dump on every message.
+        if raw.startswith("/"):
+            text = raw.split("@")[0].lower().lstrip("/")
+            if text:
+                say(dispatch(text, state))
 
 
 # ── main ────────────────────────────────────────────────────────────────────
@@ -597,16 +671,22 @@ def main():
                 if "rate limit" in err.lower() or "403" in err:
                     break
                 continue
+            seen = state.setdefault("seen", [])
+            seeded = repo in seen
+
             new = snapshot(issues)
             old = state["repos"].get(repo, {})
-            alerts += diff_repo(repo, old, new)
-            if old:
-                alerts += diff_comments(repo, old, new, budget)
+            alerts += diff_repo(repo, old, new, seeded)
+            if seeded:
+                alerts += diff_comments(repo, old, new, budget, state.setdefault("claim_flags", {}))
             state["repos"][repo] = new
 
             new_prs = pr_snapshot(prs)
-            alerts += diff_prs(repo, state.get("prs", {}).get(repo, {}), new_prs)
+            alerts += diff_prs(repo, state.get("prs", {}).get(repo, {}), new_prs, seeded)
             state.setdefault("prs", {})[repo] = new_prs
+
+            if repo not in seen:
+                seen.append(repo)
 
         alerts += check_pr(state)
 
