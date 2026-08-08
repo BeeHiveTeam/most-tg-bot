@@ -61,13 +61,37 @@ tokens into a chat or a commit.
 | `MY_CLAIM` | your own claimed issue, `owner/repo#number` — kept out of the "someone is claiming this" alerts and marked as yours in `/taken` |
 | `MAINTAINERS` | comma-separated logins whose claim bookkeeping to ignore (defaults to the pool admin) |
 
+## Requirements
+
+**Python 3.7+ and nothing else.** No `pip install`, no `requirements.txt`, no Telegraf, no
+database, no metrics agent — the bot uses only the standard library (`urllib`, `json`, `ssl`).
+If `python3 --version` says 3.7 or newer, you have everything.
+
 ## Run
 
+Foreground, from the repo directory:
+
 ```
-cp config.env.example config.env    # fill in, chmod 600
-python3 bot.py                        # foreground
-# or as a service:
-sudo cp most-tg-bot.service /etc/systemd/system/ && sudo systemctl enable --now most-tg-bot
+cp config.env.example config.env    # fill in your tokens, then: chmod 600 config.env
+python3 bot.py
+```
+
+Enter the token without it landing in your shell history:
+
+```
+read -rsp 'Telegram token: ' TG; echo "TG_TOKEN=$TG" >> config.env; chmod 600 config.env
+```
+
+As a systemd service — copy the code and the unit into place first (the unit runs
+`/opt/most-tg-bot/bot.py`, so the files have to be there):
+
+```
+sudo mkdir -p /opt/most-tg-bot
+sudo cp bot.py config.env /opt/most-tg-bot/
+sudo cp most-tg-bot.service /etc/systemd/system/
+# edit the unit if needed: User= (defaults to `ubuntu`) and the paths above must match
+sudo systemctl enable --now most-tg-bot
+sudo systemctl status most-tg-bot
 ```
 
 The first poll seeds state silently — it does not replay every existing issue as an alert.
