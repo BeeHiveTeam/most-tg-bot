@@ -96,6 +96,107 @@ def is_release(body):
 UA = "most-tg-bot (+https://github.com/BeeHiveTeam)"
 
 
+# ── i18n ──────────────────────────────────────────────────────────────────────
+# One chat per bot, so language is a single setting, not per-user. Default English for a
+# public repo; set LANG=ru in config.env (or tap the 🌐 button) for Russian.
+DEFAULT_LANG = "en"
+_lang = DEFAULT_LANG  # set from state at the start of each poll cycle and each command
+
+T = {
+  "btn_free":   {"en": "🟢 Free",    "ru": "🟢 Свободные",  "de": "🟢 Frei"},
+  "btn_taken":  {"en": "🔒 Taken",   "ru": "🔒 Занятые",    "de": "🔒 Vergeben"},
+  "btn_pool":   {"en": "📊 Summary", "ru": "📊 Сводка",     "de": "📊 Übersicht"},
+  "btn_pr":     {"en": "🔀 Our PR",  "ru": "🔀 Наш PR",     "de": "🔀 Unser PR"},
+  "btn_rate":   {"en": "📈 Quota",   "ru": "📈 Квота",      "de": "📈 Kontingent"},
+  "btn_help":   {"en": "❓ Help",     "ru": "❓ Помощь",     "de": "❓ Hilfe"},
+  "btn_lang":   {"en": "🌐 RU",      "ru": "🌐 DE",         "de": "🌐 EN"},
+
+  "a_new":      {"en": "🆕 <b>NEW ISSUE</b>", "ru": "🆕 <b>НОВАЯ ЗАДАЧА</b>", "de": "🆕 <b>NEUES ISSUE</b>"},
+  "a_claimed":  {"en": "🔒 <b>CLAIMED</b> by", "ru": "🔒 <b>ЗАНЯЛИ</b> —", "de": "🔒 <b>VERGEBEN</b> an"},
+  "a_freed":    {"en": "🟢 <b>FREED</b>", "ru": "🟢 <b>ОСВОБОДИЛАСЬ</b>", "de": "🟢 <b>FREI</b>"},
+  "a_freed_was":{"en": "— was", "ru": "— была у", "de": "— war bei"},
+  "a_closed":   {"en": "✅ <b>CLOSED</b>", "ru": "✅ <b>ЗАКРЫТА</b>", "de": "✅ <b>GESCHLOSSEN</b>"},
+  "a_claimreq": {"en": "✋ <b>CLAIM REQUESTED</b> by", "ru": "✋ <b>ПРОСЯТ ЗАЯВКУ</b> —", "de": "✋ <b>ANSPRUCH GEMELDET</b> von"},
+  "a_prreview": {"en": "📤 <b>PR FOR REVIEW</b> by", "ru": "📤 <b>PR НА РЕВЬЮ</b> —", "de": "📤 <b>PR ZUR PRÜFUNG</b> von"},
+  "a_merged":   {"en": "🎉 <b>PR MERGED</b>", "ru": "🎉 <b>PR СМЕРЖЕН</b>", "de": "🎉 <b>PR GEMERGT</b>"},
+  "a_merged_note":{"en": "⚡ Claim slot is free. Claim the next one <b>now</b> — issues go in minutes.",
+                   "ru": "⚡ Слот заявки свободен. Заявляться <b>сейчас</b> — задачи разбирают за минуты.",
+                   "de": "⚡ Anspruchsplatz ist frei. Jetzt das nächste <b>sofort</b> beanspruchen — Issues gehen in Minuten weg."},
+  "a_prstate":  {"en": "⚠️ <b>PR {st}</b>", "ru": "⚠️ <b>PR {st}</b>", "de": "⚠️ <b>PR {st}</b>"},
+  "a_prcomm":   {"en": "💬 <b>PR comments: +{n}</b>", "ru": "💬 <b>Комментариев на PR: +{n}</b>", "de": "💬 <b>PR-Kommentare: +{n}</b>"},
+  "a_conflict": {"en": "⛔ <b>CONFLICTS</b> on {pr} — upstream moved, rebase needed",
+                 "ru": "⛔ <b>КОНФЛИКТЫ</b> на {pr} — upstream ушёл вперёд, нужен ребейз",
+                 "de": "⛔ <b>KONFLIKTE</b> bei {pr} — Upstream ist weiter, Rebase nötig"},
+
+  "free_head":  {"en": "🟢 <b>FREE — {n} issues</b>\\n⭐ = good first issue",
+                 "ru": "🟢 <b>СВОБОДНО — {n} задач</b>\\n⭐ = good first issue",
+                 "de": "🟢 <b>FREI — {n} Issues</b>\\n⭐ = good first issue"},
+  "free_repo":  {"en": "(free: {n})", "ru": "(свободно: {n})", "de": "(frei: {n})"},
+  "free_none":  {"en": "\\n\\nNothing free.", "ru": "\\n\\nСвободных задач нет.", "de": "\\n\\nNichts frei."},
+  "free_mine":  {"en": "\\n<i>our claim {x} is excluded</i>", "ru": "\\n<i>наша заявка {x} в список не входит</i>", "de": "\\n<i>unser Anspruch {x} ist ausgenommen</i>"},
+  "free_claimed":{"en": "claimed by {who}?", "ru": "заявка от {who}?", "de": "beansprucht von {who}?"},
+
+  "taken_head": {"en": "🔒 <b>TAKEN — {n} issues</b>\\n", "ru": "🔒 <b>ЗАНЯТО — {n} задач</b>\\n", "de": "🔒 <b>VERGEBEN — {n} Issues</b>\\n"},
+  "taken_us":   {"en": "US", "ru": "МЫ", "de": "WIR"},
+
+  "pool_head":  {"en": "<b>MOST pool</b>\\n{free} free of {open} open", "ru": "<b>Пул MOST</b>\\nСвободно {free} из {open} открытых", "de": "<b>MOST-Pool</b>\\n{free} frei von {open} offen"},
+  "pool_repo":  {"en": "{free} of {open}", "ru": "{free} из {open}", "de": "{free} von {open}"},
+
+  "pr_none":    {"en": "No PR watched (set WATCH_PR in config.env).", "ru": "PR не отслеживается (задайте WATCH_PR в config.env).", "de": "Kein PR beobachtet (WATCH_PR in config.env setzen)."},
+  "pr_readfail":{"en": "could not read {pr}: {err}", "ru": "не удалось прочитать {pr}: {err}", "de": "{pr} nicht lesbar: {err}"},
+  "pr_ci_none": {"en": "not run — awaiting maintainer approval (first PR from a fork)", "ru": "не запускался — ждём кнопки мейнтейнера (первый PR из форка)", "de": "nicht gestartet — wartet auf Maintainer-Freigabe (erster PR aus einem Fork)"},
+  "pr_m_ok":    {"en": "no conflicts", "ru": "конфликтов нет", "de": "keine Konflikte"},
+  "pr_m_bad":   {"en": "⛔ CONFLICTS", "ru": "⛔ КОНФЛИКТЫ", "de": "⛔ KONFLIKTE"},
+  "pr_m_wait":  {"en": "GitHub still computing", "ru": "GitHub ещё считает", "de": "GitHub rechnet noch"},
+  "pr_merged":  {"en": " · 🎉 MERGED", "ru": " · 🎉 СМЕРЖЕН", "de": " · 🎉 GEMERGT"},
+  "pr_body":    {"en": "<b>PR {pr}</b>\\nstate: {st}{mg}\\nmerge: {m}\\ncomments: {c}\\nCI: {ci}\\n{link}",
+                 "ru": "<b>PR {pr}</b>\\nсостояние: {st}{mg}\\nслияние: {m}\\nкомментариев: {c}\\nCI: {ci}\\n{link}",
+                 "de": "<b>PR {pr}</b>\\nStatus: {st}{mg}\\nMerge: {m}\\nKommentare: {c}\\nCI: {ci}\\n{link}"},
+
+  "rate_body":  {"en": "<b>GitHub quota</b>\\n{rem} of {lim} left, resets in {mm}m {ss}s\\ntoken: {tok}\\npoll: every {iv}s over {nr} repos",
+                 "ru": "<b>Квота GitHub</b>\\nосталось {rem} из {lim}, сброс через {mm} мин {ss} с\\nтокен: {tok}\\nопрос: раз в {iv} с по {nr} репозиториям",
+                 "de": "<b>GitHub-Kontingent</b>\\n{rem} von {lim} übrig, Reset in {mm}m {ss}s\\nToken: {tok}\\nAbfrage: alle {iv}s über {nr} Repos"},
+  "rate_tok_y": {"en": "yes", "ru": "есть", "de": "ja"},
+  "rate_tok_n": {"en": "NO — 60/hr cap", "ru": "НЕТ — потолок 60/час", "de": "NEIN — 60/Std-Limit"},
+
+  "help":       {"en": ("<b>MOST pool watcher</b>\\n"
+                        "Watches 7 repos and pushes:\\n"
+                        "🆕 new issue · 🔒 claimed · 🟢 <b>freed</b>\\n"
+                        "✋ claim requested · 📤 PR for review · ✅ closed\\n"
+                        "🎉 your PR merged · 💬 comment on your PR · ⛔ conflicts\\n\\n"
+                        "<b>Commands</b>\\n"
+                        "/free — what is free, by repo\\n/taken — who holds what\\n"
+                        "/pool — per-repo summary\\n/pr — your PR and its CI\\n"
+                        "/rate — GitHub quota\\n/lang — switch language\\n/help — this message"),
+                 "ru": ("<b>Наблюдатель за пулом MOST</b>\\n"
+                        "Следит за 7 репозиториями и сам присылает:\\n"
+                        "🆕 новая задача · 🔒 задачу заняли · 🟢 <b>задача освободилась</b>\\n"
+                        "✋ кто-то просит заявку · 📤 PR на ревью · ✅ закрыта\\n"
+                        "🎉 наш PR смержен · 💬 комментарий на PR · ⛔ конфликты\\n\\n"
+                        "<b>Команды</b>\\n"
+                        "/free — что свободно, по репозиториям\\n/taken — кто что держит\\n"
+                        "/pool — сводка по репозиториям\\n/pr — наш PR и состояние CI\\n"
+                        "/rate — квота GitHub\\n/lang — сменить язык\\n/help — это сообщение"),
+                 "de": ("<b>MOST-Pool-Watcher</b>\\n"
+                        "Beobachtet 7 Repos und meldet:\\n"
+                        "🆕 neues Issue · 🔒 vergeben · 🟢 <b>frei geworden</b>\\n"
+                        "✋ Anspruch gemeldet · 📤 PR zur Prüfung · ✅ geschlossen\\n"
+                        "🎉 dein PR gemergt · 💬 Kommentar an deinem PR · ⛔ Konflikte\\n\\n"
+                        "<b>Befehle</b>\\n"
+                        "/free — was frei ist, nach Repo\\n/taken — wer was hält\\n"
+                        "/pool — Übersicht nach Repo\\n/pr — dein PR und dessen CI\\n"
+                        "/rate — GitHub-Kontingent\\n/lang — Sprache wechseln\\n/help — diese Nachricht")},
+  "lang_set":   {"en": "Language: English. Tap 🌐 or /lang to cycle.",
+                 "ru": "Язык: русский. Нажмите 🌐 или /lang для смены.",
+                 "de": "Sprache: Deutsch. 🌐 oder /lang zum Wechseln."},
+}
+
+
+def tr(key, **kw):
+    val = T[key].get(_lang, T[key]["en"])
+    return val.format(**kw) if kw else val
+
+
 # ── config ──────────────────────────────────────────────────────────────────
 
 def load_cfg():
@@ -138,6 +239,9 @@ MAINTAINERS = {m.strip().lower() for m in CFG.get("MAINTAINERS", "portdeveloper"
 # set an assignee — issue #2 is ours and shows no assignee — so without this the watcher would
 # list our own work as free.
 MY_CLAIM = CFG.get("MY_CLAIM", "").strip()
+DEFAULT_LANG_CFG = CFG.get("LANG", "en").strip().lower()
+if DEFAULT_LANG_CFG in ("en", "ru", "de"):
+    DEFAULT_LANG = DEFAULT_LANG_CFG
 # Without a token GitHub allows 60 requests/hour, and one poll costs one request per repo.
 # 7 repos every 10 minutes is 42/hour, which fits with headroom for the /commands. With a
 # token the ceiling is 5000/hour and a one-minute poll is comfortable.
@@ -201,14 +305,17 @@ def tg(method, **params):
         return None
 
 
-KEYBOARD = json.dumps({"inline_keyboard": [
-    [{"text": "🟢 Свободные", "callback_data": "free"},
-     {"text": "🔒 Занятые", "callback_data": "taken"}],
-    [{"text": "📊 Сводка", "callback_data": "pool"},
-     {"text": "🔀 Наш PR", "callback_data": "pr"}],
-    [{"text": "📈 Квота", "callback_data": "rate"},
-     {"text": "❓ Помощь", "callback_data": "help"}],
-]})
+def keyboard():
+    """Inline keyboard in the current language, with a language toggle."""
+    return json.dumps({"inline_keyboard": [
+        [{"text": tr("btn_free"), "callback_data": "free"},
+         {"text": tr("btn_taken"), "callback_data": "taken"}],
+        [{"text": tr("btn_pool"), "callback_data": "pool"},
+         {"text": tr("btn_pr"), "callback_data": "pr"}],
+        [{"text": tr("btn_rate"), "callback_data": "rate"},
+         {"text": tr("btn_help"), "callback_data": "help"}],
+        [{"text": tr("btn_lang"), "callback_data": "lang"}],
+    ]})
 
 
 def _split(text, limit=3900):
@@ -245,7 +352,7 @@ def say(text, kb=True):
         params = dict(chat_id=TG_CHAT, text=chunk, parse_mode="HTML",
                       disable_web_page_preview="true")
         if kb and n == len(chunks) - 1:
-            params["reply_markup"] = KEYBOARD
+            params["reply_markup"] = keyboard()
         tg("sendMessage", **params)
 
 
@@ -300,7 +407,7 @@ def diff_prs(repo, old, new, seeded):
         # Our own PR is covered in detail by check_pr; do not double-report it here.
         if f"{repo}#{num}" == (WATCH_PR or ""):
             continue
-        out.append(f"📤 <b>PR НА РЕВЬЮ</b> — {esc(cur['author'])}, {esc(short(repo))} #{num}\n"
+        out.append(f"{tr('a_prreview')} {esc(cur['author'])}, {esc(short(repo))} #{num}\n"
                    f"{esc(cur['title'])}\nhttps://github.com/{repo}/pull/{num}")
     return out
 
@@ -364,19 +471,19 @@ def diff_repo(repo, old, new, seeded):
         tag = "★ good first issue" if is_gfi(cur["labels"]) else ", ".join(cur["labels"][:2])
         link = issue_url(repo, num)
         if prev is None:
-            out.append(f"🆕 <b>НОВАЯ ЗАДАЧА</b> {esc(short(repo))} #{num}\n{esc(cur['title'])}\n<i>{esc(tag)}</i>\n{link}")
+            out.append(f"{tr('a_new')} {esc(short(repo))} #{num}\n{esc(cur['title'])}\n<i>{esc(tag)}</i>\n{link}")
             continue
         if prev["assignee"] != cur["assignee"]:
             if cur["assignee"] is None:
                 # The one alert worth waking up for: a claim was released and the slot is open.
-                out.append(f"🟢 <b>ОСВОБОДИЛАСЬ</b> {esc(short(repo))} #{num} — была у {esc(prev['assignee'])}\n"
+                out.append(f"{tr('a_freed')} {esc(short(repo))} #{num} {tr('a_freed_was')} {esc(prev['assignee'])}\n"
                            f"{esc(cur['title'])}\n<i>{esc(tag)}</i>\n{link}")
             else:
-                out.append(f"🔒 <b>ЗАНЯЛИ</b> — {esc(cur['assignee'])}, {esc(short(repo))} #{num}\n"
+                out.append(f"{tr('a_claimed')} {esc(cur['assignee'])}, {esc(short(repo))} #{num}\n"
                            f"{esc(cur['title'])}\n{link}")
     for num, prev in old.items():
         if num not in new:
-            out.append(f"✅ <b>ЗАКРЫТА</b> {esc(short(repo))} #{num}\n{esc(prev['title'])}\n{issue_url(repo, num)}")
+            out.append(f"{tr('a_closed')} {esc(short(repo))} #{num}\n{esc(prev['title'])}\n{issue_url(repo, num)}")
     return out
 
 
@@ -407,7 +514,7 @@ def diff_comments(repo, old, new, budget, state_claims):
             if flagged.get(key) == who:
                 continue  # already alerted on this person's claim
             flagged[key] = who
-            out.append(f"✋ <b>ПРОСЯТ ЗАЯВКУ</b> — {esc(who)}, {esc(short(repo))} #{num}\n"
+            out.append(f"{tr('a_claimreq')} {esc(who)}, {esc(short(repo))} #{num}\n"
                        f"{esc(cur['title'])}\n<i>{esc(text)}</i>\n{issue_url(repo, num)}")
         else:
             # No claim in the comments — clear any stale flag so a real claim later still fires.
@@ -436,17 +543,16 @@ def check_pr(state):
     out = []
     link = f"https://github.com/{repo}/pull/{num}"
     if cur["merged"] and not prev["merged"]:
-        out.append(f"🎉 <b>PR СМЕРЖЕН</b> {esc(WATCH_PR)}\n{link}\n\n"
-                   f"⚡ Слот заявки свободен. Заявляться <b>сейчас</b> — задачи разбирают за минуты.")
+        out.append(f"{tr('a_merged')} {esc(WATCH_PR)}\n{link}\n\n{tr('a_merged_note')}")
     elif cur["state"] != prev["state"]:
-        out.append(f"⚠️ <b>PR {esc(cur['state'].upper())}</b> {esc(WATCH_PR)}\n{link}")
+        out.append(f"{tr('a_prstate', st=esc(cur['state'].upper()))} {esc(WATCH_PR)}\n{link}")
     if cur["comments"] > prev["comments"]:
-        out.append(f"💬 <b>Комментариев на PR: +{cur['comments'] - prev['comments']}</b> {esc(WATCH_PR)}\n{link}")
+        out.append(f"{tr('a_prcomm', n=cur['comments'] - prev['comments'])} {esc(WATCH_PR)}\n{link}")
     # GitHub returns mergeable=None while recomputing after a push, so a real conflict can
     # arrive as True -> None -> False and slip past a naive prev/cur check. Track the last
     # DEFINITE value instead of the immediately-previous one.
     if cur["mergeable"] is False and state.get("pr_last_mergeable") is not False:
-        out.append(f"⛔ <b>КОНФЛИКТЫ</b> на {esc(WATCH_PR)} — upstream ушёл вперёд, нужен ребейз\n{link}")
+        out.append(f"{tr('a_conflict', pr=esc(WATCH_PR))}\n{link}")
     if cur["mergeable"] is not None:
         state["pr_last_mergeable"] = cur["mergeable"]
     return out
@@ -488,7 +594,7 @@ def cmd_free(state):
         if not free:
             continue
         total += len(free)
-        rows = [f"\n<b>{esc(short(repo))}</b>  (свободно: {len(free)})"]
+        rows = [f"\n<b>{esc(short(repo))}</b>  {tr('free_repo', n=len(free))}"]
         for n, v in sorted(free, key=lambda x: int(x[0])):
             d = difficulty(v["labels"])
             star = "⭐ " if is_gfi(v["labels"]) else "• "
@@ -496,13 +602,13 @@ def cmd_free(state):
             # No assignee, but someone claimed it in a comment (the pool approves in comments):
             # mark it so the list does not read as genuinely open.
             claimer = flags.get(f"{repo}#{n}")
-            note = f" <i>· claimed by {esc(claimer)}?</i>" if claimer else ""
+            note = f" <i>· {tr('free_claimed', who=esc(claimer))}</i>" if claimer else ""
             rows.append(f'{star}<a href="{issue_url(repo, n)}">#{n}</a> {esc(v["title"][:64])}{tag}{note}')
         blocks.append("\n".join(rows))
-    head = f"<b>🟢 СВОБОДНО — {total} задач</b>\n⭐ = good first issue"
+    head = tr("free_head", n=total)
     if MY_CLAIM:
-        head += f"\n<i>наша заявка {esc(MY_CLAIM)} в список не входит</i>"
-    return head + "\n" + "\n".join(blocks) if blocks else head + "\n\nСвободных задач нет."
+        head += tr("free_mine", x=esc(MY_CLAIM))
+    return head + "\n" + "\n".join(blocks) if blocks else head + tr("free_none")
 
 
 def cmd_taken(state):
@@ -516,11 +622,11 @@ def cmd_taken(state):
         total += len(held)
         rows = [f"\n<b>{esc(short(repo))}</b>"]
         for n, v in sorted(held, key=lambda x: int(x[0])):
-            who = "МЫ" if mine(repo, n) else esc(v["assignee"])
+            who = tr("taken_us") if mine(repo, n) else esc(v["assignee"])
             mark = "🟡" if mine(repo, n) else "🔒"
             rows.append(f'{mark} <a href="{issue_url(repo, n)}">#{n}</a> <b>{who}</b> — {esc(v["title"][:52])}')
         blocks.append("\n".join(rows))
-    return f"<b>🔒 ЗАНЯТО — {total} задач</b>\n" + "\n".join(blocks)
+    return tr("taken_head", n=total) + "\n".join(blocks)
 
 
 def cmd_pool(state):
@@ -532,32 +638,34 @@ def cmd_pool(state):
         gfi = sum(1 for v in free if is_gfi(v["labels"]))
         t_open += len(snap); t_free += len(free); t_gfi += gfi
         bar = "🟢" if free else "⚪"
-        rows.append(f'{bar} <b>{esc(short(repo))}</b> — {len(free)} из {len(snap)}'
+        rows.append(f'{bar} <b>{esc(short(repo))}</b> — {tr("pool_repo", free=len(free), open=len(snap))}'
                     + (f' · ⭐{gfi}' if gfi else ""))
-    head = (f"<b>Пул MOST</b>\nСвободно {t_free} из {t_open} открытых"
+    head = (tr("pool_head", free=t_free, open=t_open)
             + (f" · ⭐{t_gfi} good-first" if t_gfi else "") + "\n")
     return head + "\n".join(rows)
 
 
 def cmd_pr():
     if not WATCH_PR or "#" not in WATCH_PR:
-        return "PR не отслеживается (задайте WATCH_PR в config.env)."
+        return tr("pr_none")
     repo, num = WATCH_PR.split("#", 1)
     pr, err = gh(f"/repos/{repo}/pulls/{num}")
     if err:
-        return f"не удалось прочитать {esc(WATCH_PR)}: {esc(err)}"
+        return tr("pr_readfail", pr=esc(WATCH_PR), err=esc(err))
     checks, _ = gh(f"/repos/{repo}/commits/{pr['head']['sha']}/check-runs")
     n_checks = (checks or {}).get("total_count", 0)
     runs = ", ".join(f"{c['name']}: {c['conclusion'] or c['status']}"
                      for c in (checks or {}).get("check_runs", []))
-    ci = runs if n_checks else "не запускался — ждём кнопки мейнтейнера (первый PR из форка)"
-    merge = {True: "конфликтов нет", False: "⛔ КОНФЛИКТЫ", None: "GitHub ещё считает"}
-    return (f"<b>PR {esc(WATCH_PR)}</b>\n"
-            f"состояние: {esc(pr['state'])}{' · 🎉 СМЕРЖЕН' if pr.get('merged_at') else ''}\n"
-            f"слияние: {esc(merge.get(pr.get('mergeable'), pr.get('mergeable')))}\n"
-            f"комментариев: {pr['comments'] + pr['review_comments']}\n"
-            f"CI: {esc(ci)}\n"
-            f"https://github.com/{repo}/pull/{num}")
+    ci = runs if n_checks else tr("pr_ci_none")
+    merge = {True: tr("pr_m_ok"), False: tr("pr_m_bad"), None: tr("pr_m_wait")}
+    return tr("pr_body",
+              pr=esc(WATCH_PR),
+              st=esc(pr['state']),
+              mg=(tr("pr_merged") if pr.get('merged_at') else ''),
+              m=esc(merge.get(pr.get('mergeable'), str(pr.get('mergeable')))),
+              c=pr['comments'] + pr['review_comments'],
+              ci=esc(ci),
+              link=f"https://github.com/{repo}/pull/{num}")
 
 
 def cmd_rate():
@@ -566,28 +674,23 @@ def cmd_rate():
         return f"rate_limit failed: {esc(err)}"
     c = data["resources"]["core"]
     left = max(0, c["reset"] - int(time.time()))
-    return (f"<b>Квота GitHub</b>\n"
-            f"осталось {c['remaining']} из {c['limit']}, сброс через {left // 60} мин {left % 60} с\n"
-            f"токен: {'есть' if GH_TOKEN else 'НЕТ — потолок 60/час'}\n"
-            f"опрос: раз в {POLL_INTERVAL} с по {len(REPOS)} репозиториям")
+    return tr("rate_body",
+              rem=c['remaining'], lim=c['limit'], mm=left // 60, ss=left % 60,
+              tok=(tr("rate_tok_y") if GH_TOKEN else tr("rate_tok_n")),
+              iv=POLL_INTERVAL, nr=len(REPOS))
 
 
-HELP = ("<b>Наблюдатель за пулом MOST</b>\n"
-        "Следит за 7 репозиториями и сам присылает:\n"
-        "🆕 новая задача · 🔒 задачу заняли · 🟢 <b>задача освободилась</b>\n"
-        "✋ кто-то просит заявку · ✅ закрыта\n"
-        "🎉 наш PR смержен · 💬 комментарий на PR · ⛔ конфликты\n\n"
-        "<b>Команды</b>\n"
-        "/free — что свободно, по репозиториям\n"
-        "/taken — кто что держит\n"
-        "/pool — сводка по репозиториям\n"
-        "/pr — наш PR и состояние CI\n"
-        "/rate — квота GitHub\n"
-        "/help — это сообщение")
+
 
 
 def dispatch(cmd, state):
-    """Одно место, откуда отвечают и команды, и кнопки — иначе они разъезжаются."""
+    """Single place both commands and buttons answer from, so they cannot drift apart."""
+    global _lang
+    if cmd.startswith("lang"):
+        order = ["en", "ru", "de"]
+        _lang = order[(order.index(_lang) + 1) % len(order)] if _lang in order else "en"
+        state["lang"] = _lang
+        return tr("lang_set")
     if cmd.startswith("free"):
         return cmd_free(state)
     if cmd.startswith("taken"):
@@ -598,7 +701,7 @@ def dispatch(cmd, state):
         return cmd_pr()
     if cmd.startswith("rate"):
         return cmd_rate()
-    return HELP
+    return tr("help")
 
 
 def handle_commands(state):
@@ -609,6 +712,8 @@ def handle_commands(state):
     и бот выглядит исправным, отвечая только на текст. Смещение сохраняется, чтобы рестарт
     не проигрывал старые команды заново.
     """
+    global _lang
+    _lang = state.get("lang", DEFAULT_LANG)
     offset = state.get("tg_offset", 0)
     res = tg("getUpdates", offset=offset + 1, timeout=0, limit=20,
              allowed_updates='["message","callback_query"]')
@@ -651,14 +756,17 @@ def handle_commands(state):
 # ── main ────────────────────────────────────────────────────────────────────
 
 def main():
+    global _lang
     state = load_state()
     state.setdefault("repos", {})
+    _lang = state.get("lang", DEFAULT_LANG)  # restore chosen language across restarts
     first_run = not state["repos"]
     if first_run:
         print("first run: seeding state without alerts", flush=True)
 
     while True:
         started = time.time()
+        _lang = state.get("lang", DEFAULT_LANG)
         alerts = []
         # One claim-comment lookup per cycle at most when running tokenless, so a busy repo
         # cannot exhaust the hourly quota and blind the watcher entirely.

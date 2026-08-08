@@ -32,7 +32,8 @@ Watching all of them by hand is how you learn an issue was claimed the morning a
 - 🎉 **your PR merged** · 💬 **new comment on your PR** · ⛔ **your PR went conflict-dirty**
 
 Commands: `/free` (unclaimed issues, by repo, with difficulty) · `/taken` (who holds what) ·
-`/pool` (per-repo counts) · `/pr` (the PR you are watching, and its CI) · `/rate` (GitHub quota).
+`/pool` (per-repo counts) · `/pr` (the PR you are watching, and its CI) · `/rate` (GitHub quota) · `/lang` (switch language: English / Russian / German).
+Default is English; set `LANG=en|ru|de` in config or tap 🌐.
 
 ## Reading a claim correctly is the hard part
 
