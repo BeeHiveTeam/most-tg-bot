@@ -1,0 +1,25 @@
+[Unit]
+Description=MOST pool Telegram watcher (new/claimed/freed issues + our PR)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/most-tg-bot
+ExecStart=/usr/bin/python3 /opt/most-tg-bot/bot.py
+Restart=always
+RestartSec=15
+StandardOutput=journal
+StandardError=journal
+
+# Nothing here touches the node or needs privilege: it reads public GitHub and writes one
+# state file. Keep it boxed in accordingly.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/most-tg-bot
+
+[Install]
+WantedBy=multi-user.target
