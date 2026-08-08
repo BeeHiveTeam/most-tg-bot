@@ -61,6 +61,27 @@ tokens into a chat or a commit.
 | `MY_CLAIM` | your own claimed issue, `owner/repo#number` — kept out of the "someone is claiming this" alerts and marked as yours in `/taken` |
 | `MAINTAINERS` | comma-separated logins whose claim bookkeeping to ignore (defaults to the pool admin) |
 
+## Install
+
+One line, on the machine that will run it:
+
+```
+curl -fsSL https://raw.githubusercontent.com/BeeHiveTeam/most-tg-bot/main/install.sh | bash
+```
+
+It checks Python, downloads and compile-checks `bot.py`, asks for your tokens (never echoed,
+never in shell history), writes `config.env` with mode `600`, and offers to install and start
+the systemd unit — rewriting `User=` and the paths for your machine. Re-running is safe: an
+existing config is kept and `state.json` is never touched.
+
+Unattended, or on a box with no terminal:
+
+```
+TG_TOKEN=... TG_CHAT_ID=... [GH_TOKEN=...] [MY_LOGIN=...] [BOT_LANG=en] bash install.sh
+```
+
+Prefer to read it first? `curl -fsSLO .../install.sh && less install.sh && bash install.sh`.
+
 ## Requirements
 
 **Python 3.7+ and nothing else.** No `pip install`, no `requirements.txt`, no Telegraf, no
