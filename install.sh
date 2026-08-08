@@ -203,7 +203,20 @@ if [ "$HAVE_SYSTEMD" -eq 1 ]; then
       -e "s|^ExecStart=.*|ExecStart=$(command -v python3) $DEST/bot.py|" \
       -e "s|^ReadWritePaths=.*|ReadWritePaths=$DEST|" \
       "$TMP/most-tg-bot.service" > "$TMP/unit"
-  $SUDO cp "$TMP/unit" "/etc/systemd/system/${SERVICE}.service"
+  UNIT="/etc/systemd/system/${SERVICE}.service"
+  # Never silently replace a unit that already points somewhere else: on a machine where the
+  # bot is already installed under a different path, overwriting it and reloading would kill a
+  # working service. Back it up and say so.
+  if $SUDO test -f "$UNIT"; then
+    OLD_WD=$($SUDO grep -m1 '^WorkingDirectory=' "$UNIT" 2>/dev/null | cut -d= -f2- || true)
+    if [ -n "$OLD_WD" ] && [ "$OLD_WD" != "$DEST" ]; then
+      warn "An existing $SERVICE unit points at $OLD_WD, not $DEST."
+      a=$(ask "Replace it? The old unit is backed up. [y/N]: " "n")
+      case "$a" in y|Y|yes) ;; *) die "Left the existing service alone. Nothing was changed." ;; esac
+    fi
+    $SUDO cp "$UNIT" "${UNIT}.bak-$(date +%Y%m%d%H%M%S)" 2>/dev/null || true
+  fi
+  $SUDO cp "$TMP/unit" "$UNIT"
   $SUDO systemctl daemon-reload
   $SUDO systemctl enable --now "$SERVICE" >/dev/null 2>&1 || die "systemctl enable failed."
 
