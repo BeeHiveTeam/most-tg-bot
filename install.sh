@@ -4,11 +4,16 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/BeeHiveTeam/most-tg-bot/main/install.sh | bash
 #
-# Asks for what it cannot know, checks what it can, and refuses rather than guessing. Tokens
-# are read with `read -s` so they never reach the shell history; when the script is piped into
-# bash, stdin is the pipe, so prompts are read from /dev/tty instead.
+# Asks for what it cannot know, checks what it can, and refuses rather than guessing. Typed
+# tokens are read without echo and never enter shell history; when the script is piped into
+# bash, stdin is the pipe, so prompts come from /dev/tty instead.
 #
-# Re-running is safe: an existing config is kept unless you say otherwise, and state.json —
+# Unattended (note: values given this way DO land in your shell history):
+#   TG_TOKEN=... TG_CHAT_ID=... [MOST_GH_TOKEN=...] [MY_LOGIN=...] [BOT_LANG=en] \
+#     [INSTALL_SERVICE=1] [MOST_FORCE=1] bash install.sh
+#
+# Re-running is safe: an existing config is kept unless you pass MOST_FORCE=1, an existing
+# systemd unit pointing elsewhere is never replaced without confirmation, and state.json —
 # which remembers what has already been alerted — is never touched.
 
 set -euo pipefail
@@ -53,7 +58,7 @@ ask_secret() {
 #   TG_TOKEN=... TG_CHAT_ID=... bash install.sh
 # Anything given this way is not prompted for.
 ENV_TG_TOKEN="${TG_TOKEN:-}"; ENV_TG_CHAT="${TG_CHAT_ID:-}"
-ENV_GH_TOKEN="${GH_TOKEN:-}"; ENV_MY_LOGIN="${MY_LOGIN:-}"; ENV_LANG="${BOT_LANG:-}"
+ENV_GH_TOKEN="${MOST_GH_TOKEN:-}"; ENV_MY_LOGIN="${MY_LOGIN:-}"; ENV_LANG="${BOT_LANG:-}"
 
 say ""
 say "${B}most-tg-bot — MOST pool watcher${N}"
@@ -81,6 +86,20 @@ if [ "$(id -u)" -ne 0 ]; then
   SUDO="sudo"
 fi
 
+# DEST reaches `chown -R` as root, so validate before anything touches the filesystem. An
+# unset variable, a relative path or a system directory would otherwise recurse over it.
+case "$DEST" in
+  /*) ;;
+  *) die "MOST_BOT_DIR must be an absolute path (got: $DEST)" ;;
+esac
+case "$DEST" in
+  *[!A-Za-z0-9/._-]*) die "MOST_BOT_DIR must not contain spaces or shell metacharacters (got: $DEST)" ;;
+esac
+case "$DEST" in
+  / | /etc | /etc/* | /usr | /usr/* | /var | /var/* | /bin | /bin/* | /sbin | /sbin/* | /lib | /lib/* | /boot | /boot/* | /dev | /dev/* | /proc | /proc/* | /sys | /sys/*)
+    die "Refusing to install into a system directory: $DEST" ;;
+esac
+
 say ""
 say "Install directory: ${B}${DEST}${N}"
 
@@ -99,11 +118,20 @@ $SUDO cp "$TMP/config.env.example" "$DEST/config.env.example"
 # ── config ───────────────────────────────────────────────────────────────────
 CFG="$DEST/config.env"
 WRITE_CFG=1
-if $SUDO test -f "$CFG"; then
+if $SUDO test -f "$CFG" 2>/dev/null; then
   say ""
   warn "$CFG already exists."
-  a=$(ask "Overwrite it? Existing tokens will be lost. [y/N]: " "n")
-  case "$a" in y|Y|yes) WRITE_CFG=1 ;; *) WRITE_CFG=0; ok "Keeping the existing config." ;; esac
+  if [ "${MOST_FORCE:-}" = "1" ]; then
+    ok "Overwriting it (MOST_FORCE=1)."
+  else
+    # Default no: an unattended re-run must not silently discard working credentials. Token
+    # rotation and re-provisioning go through MOST_FORCE=1.
+    a=$(ask "Overwrite it? Existing tokens will be lost. [y/N]: " "n")
+    case "$a" in
+      y|Y|yes) ;;
+      *) WRITE_CFG=0; ok "Keeping the existing config. Use MOST_FORCE=1 to replace it." ;;
+    esac
+  fi
 fi
 
 if [ "$WRITE_CFG" -eq 1 ]; then
@@ -138,7 +166,11 @@ if [ "$WRITE_CFG" -eq 1 ]; then
   [ -n "$TG_CHAT" ] || TG_CHAT=$(ask "   chat id (Enter to detect): ")
   if [ -z "$TG_CHAT" ]; then
     say "   asking Telegram…"
-    TG_CHAT=$(curl -fsS "https://api.telegram.org/bot${TG_TOKEN}/getUpdates" 2>/dev/null \
+    # The token must not appear in argv: /proc/PID/cmdline is world-readable, so any local
+    # user running `ps` during this call would read it. Pass the URL through curl's config
+    # on stdin instead, which never reaches the process list.
+    TG_CHAT=$(printf 'url = "https://api.telegram.org/bot%s/getUpdates"\n' "$TG_TOKEN" \
+      | curl -fsS --config - 2>/dev/null \
       | python3 -c '
 import json,sys
 try: d=json.load(sys.stdin)
@@ -157,8 +189,11 @@ print(ids[-1] if ids else "")' || true)
   say ""
   say "3. GitHub token — ${B}public read only, no scopes needed${N}. Optional but recommended:"
   say "   without it GitHub allows 60 requests/hour and the poll drops to once per 10 min."
+  # Deliberately MOST_GH_TOKEN, not GH_TOKEN: the latter is the GitHub CLI's variable and is
+  # often a broad write-scoped PAT. Copying that to disk unasked is not ours to do.
   GH_TOKEN="$ENV_GH_TOKEN"
-  [ -n "$GH_TOKEN" ] || GH_TOKEN=$(ask_secret "   token (Enter to skip): ")
+  if [ -n "$GH_TOKEN" ]; then ok "   token taken from MOST_GH_TOKEN."
+  else GH_TOKEN=$(ask_secret "   token (Enter to skip): "); fi
 
   say ""
   say "4. Your GitHub login. Used to tell your own claim apart, and to follow your own"
@@ -181,19 +216,40 @@ print(ids[-1] if ids else "")' || true)
     [ -n "$MY_LOGIN" ] && echo "MY_LOGIN=$MY_LOGIN"
     echo "LANG=$LANG_CHOICE"
   } >> "$TMPCFG"
-  $SUDO cp "$TMPCFG" "$CFG"
-  $SUDO chmod 600 "$CFG"
+  # install(1) creates with the mode, so the token is never briefly world-readable, and it
+  # does not follow a symlink at $CFG the way cp would.
+  $SUDO install -m 600 "$TMPCFG" "$CFG"
   ok "Wrote $CFG (mode 600)"
 fi
 
 # ── run ──────────────────────────────────────────────────────────────────────
 say ""
 if [ "$HAVE_SYSTEMD" -eq 1 ]; then
-  a=$(ask "Install as a systemd service and start it now? [Y/n]: " "y")
-  case "$a" in n|N|no) HAVE_SYSTEMD=0 ;; esac
+  if [ "$HAVE_TTY" -eq 1 ]; then
+    a=$(ask "Install as a systemd service and start it now? [Y/n]: " "y")
+    case "$a" in n|N|no) HAVE_SYSTEMD=0 ;; esac
+  elif [ "${INSTALL_SERVICE:-}" = "1" ]; then
+    ok "Installing the systemd service (INSTALL_SERVICE=1)."
+  else
+    # Writing a root-owned unit is the most intrusive step here. With nobody to ask, the
+    # default must be to not do it — an unattended run should not quietly claim a system
+    # service name that may already belong to something else.
+    HAVE_SYSTEMD=0
+    warn "No terminal: skipping the systemd service. Re-run with INSTALL_SERVICE=1 to install it."
+  fi
 fi
 
 if [ "$HAVE_SYSTEMD" -eq 1 ]; then
+  # The unit hardens itself with PrivateTmp and ProtectHome, which make /tmp and /home
+  # invisible inside its namespace. Installing there yields 226/NAMESPACE at every start —
+  # a crash loop that looks like a code fault. Relax exactly what the chosen path needs.
+  EXTRA_SED=""
+  case "$DEST" in
+    /tmp/*|/var/tmp/*) EXTRA_SED="-e s|^PrivateTmp=.*|PrivateTmp=false|" ;;
+    /home/*|/root/*)   EXTRA_SED="-e s|^ProtectHome=.*|ProtectHome=false|" ;;
+  esac
+  [ -n "$EXTRA_SED" ] && warn "Relaxing unit sandboxing so $DEST is visible to the service."
+
   RUN_USER="${SUDO_USER:-$(id -un)}"
   [ "$RUN_USER" = "root" ] && warn "Installing to run as root; a non-privileged user is preferable."
   $SUDO chown -R "$RUN_USER" "$DEST"
@@ -202,6 +258,7 @@ if [ "$HAVE_SYSTEMD" -eq 1 ]; then
       -e "s|^WorkingDirectory=.*|WorkingDirectory=$DEST|" \
       -e "s|^ExecStart=.*|ExecStart=$(command -v python3) $DEST/bot.py|" \
       -e "s|^ReadWritePaths=.*|ReadWritePaths=$DEST|" \
+      $EXTRA_SED \
       "$TMP/most-tg-bot.service" > "$TMP/unit"
   UNIT="/etc/systemd/system/${SERVICE}.service"
   # Never silently replace a unit that already points somewhere else: on a machine where the
