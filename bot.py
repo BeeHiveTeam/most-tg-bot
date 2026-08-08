@@ -234,6 +234,29 @@ if _bad:
 if not REPOS:
     sys.exit("no valid repositories to watch (REPOS)")
 WATCH_PR = CFG.get("WATCH_PR", "").strip()
+
+
+def watched_pr(state):
+    """
+    Which pull request to follow.
+
+    WATCH_PR pins one explicitly. Left empty, we follow your own newest open PR in the pool,
+    found from MY_LOGIN — the poll already fetches every open PR with its author, so this costs
+    nothing extra and, unlike a pinned number, stays right when your next PR replaces this one.
+    """
+    if WATCH_PR and "#" in WATCH_PR:
+        return WATCH_PR
+    if not MY_LOGIN:
+        return ""
+    best = ""
+    best_num = -1
+    for repo, prs in (state.get("prs") or {}).items():
+        for num, info in prs.items():
+            if (info.get("author") or "").lower() != MY_LOGIN.lower():
+                continue
+            if int(num) > best_num:
+                best_num, best = int(num), f"{repo}#{num}"
+    return best
 # Pool maintainers post claim bookkeeping ("approved, it's yours", "one claimed issue at a
 # time") that can read like a claim. Their comments are never a fresh claim. Comma-separated
 # logins; defaults to the pool's admin.
@@ -394,7 +417,7 @@ def pr_snapshot(prs):
     return {str(p["number"]): {"title": p["title"], "author": p["user"]["login"]} for p in prs}
 
 
-def diff_prs(repo, old, new, seeded):
+def diff_prs(repo, old, new, seeded, watched=""):
     """
     Alert when a pull request is newly opened.
 
@@ -410,7 +433,7 @@ def diff_prs(repo, old, new, seeded):
         if num in old:
             continue
         # Our own PR is covered in detail by check_pr; do not double-report it here.
-        if f"{repo}#{num}" == (WATCH_PR or ""):
+        if f"{repo}#{num}" == (watched or ""):
             continue
         out.append(f"{tr('a_prreview')} {esc(cur['author'])}, {esc(short(repo))} #{num}\n"
                    f"{esc(cur['title'])}\nhttps://github.com/{repo}/pull/{num}")
@@ -534,9 +557,10 @@ def diff_comments(repo, old, new, budget, state_claims):
 
 def check_pr(state):
     """Watch one pull request of ours: reviews, comments, merge, CI."""
-    if not WATCH_PR or "#" not in WATCH_PR:
+    target = watched_pr(state)
+    if not target or "#" not in target:
         return []
-    repo, num = WATCH_PR.split("#", 1)
+    repo, num = target.split("#", 1)
     pr, err = gh(f"/repos/{repo}/pulls/{num}")
     if err:
         return []
@@ -553,16 +577,16 @@ def check_pr(state):
     out = []
     link = f"https://github.com/{repo}/pull/{num}"
     if cur["merged"] and not prev["merged"]:
-        out.append(f"{tr('a_merged')} {esc(WATCH_PR)}\n{link}\n\n{tr('a_merged_note')}")
+        out.append(f"{tr('a_merged')} {esc(target)}\n{link}\n\n{tr('a_merged_note')}")
     elif cur["state"] != prev["state"]:
-        out.append(f"{tr('a_prstate', st=esc(cur['state'].upper()))} {esc(WATCH_PR)}\n{link}")
+        out.append(f"{tr('a_prstate', st=esc(cur['state'].upper()))} {esc(target)}\n{link}")
     if cur["comments"] > prev["comments"]:
-        out.append(f"{tr('a_prcomm', n=cur['comments'] - prev['comments'])} {esc(WATCH_PR)}\n{link}")
+        out.append(f"{tr('a_prcomm', n=cur['comments'] - prev['comments'])} {esc(target)}\n{link}")
     # GitHub returns mergeable=None while recomputing after a push, so a real conflict can
     # arrive as True -> None -> False and slip past a naive prev/cur check. Track the last
     # DEFINITE value instead of the immediately-previous one.
     if cur["mergeable"] is False and state.get("pr_last_mergeable") is not False:
-        out.append(f"{tr('a_conflict', pr=esc(WATCH_PR))}\n{link}")
+        out.append(f"{tr('a_conflict', pr=esc(target))}\n{link}")
     if cur["mergeable"] is not None:
         state["pr_last_mergeable"] = cur["mergeable"]
     return out
@@ -665,13 +689,14 @@ def cmd_pool(state):
     return head + "\n".join(rows)
 
 
-def cmd_pr():
-    if not WATCH_PR or "#" not in WATCH_PR:
+def cmd_pr(state):
+    target = watched_pr(state)
+    if not target or "#" not in target:
         return tr("pr_none")
-    repo, num = WATCH_PR.split("#", 1)
+    repo, num = target.split("#", 1)
     pr, err = gh(f"/repos/{repo}/pulls/{num}")
     if err:
-        return tr("pr_readfail", pr=esc(WATCH_PR), err=esc(err))
+        return tr("pr_readfail", pr=esc(target), err=esc(err))
     checks, _ = gh(f"/repos/{repo}/commits/{pr['head']['sha']}/check-runs")
     n_checks = (checks or {}).get("total_count", 0)
     runs = ", ".join(f"{c['name']}: {c['conclusion'] or c['status']}"
@@ -679,7 +704,7 @@ def cmd_pr():
     ci = runs if n_checks else tr("pr_ci_none")
     merge = {True: tr("pr_m_ok"), False: tr("pr_m_bad"), None: tr("pr_m_wait")}
     return tr("pr_body",
-              pr=esc(WATCH_PR),
+              pr=esc(target),
               st=esc(pr['state']),
               mg=(tr("pr_merged") if pr.get('merged_at') else ''),
               m=esc(merge.get(pr.get('mergeable'), str(pr.get('mergeable')))),
@@ -721,7 +746,7 @@ def dispatch(cmd, state):
     if cmd.startswith("pool"):
         return cmd_pool(state)
     if cmd.startswith("pr"):
-        return cmd_pr()
+        return cmd_pr(state)
     if cmd.startswith("rate"):
         return cmd_rate()
     return tr("help")
@@ -813,7 +838,7 @@ def main():
             state["repos"][repo] = new
 
             new_prs = pr_snapshot(prs)
-            alerts += diff_prs(repo, state.get("prs", {}).get(repo, {}), new_prs, seeded)
+            alerts += diff_prs(repo, state.get("prs", {}).get(repo, {}), new_prs, seeded, watched_pr(state))
             state.setdefault("prs", {})[repo] = new_prs
 
             if repo not in seen:

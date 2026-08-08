@@ -161,7 +161,8 @@ print(ids[-1] if ids else "")' || true)
   [ -n "$GH_TOKEN" ] || GH_TOKEN=$(ask_secret "   token (Enter to skip): ")
 
   say ""
-  say "4. Your GitHub login, so an issue assigned to you still reads as yours."
+  say "4. Your GitHub login. Used to tell your own claim apart, and to follow your own"
+  say "   pull requests in the pool automatically — no PR number to keep updated."
   MY_LOGIN="$ENV_MY_LOGIN"
   [ -n "$MY_LOGIN" ] || MY_LOGIN=$(ask "   login (Enter to skip): ")
 
