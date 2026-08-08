@@ -128,18 +128,18 @@ T = {
                  "ru": "⛔ <b>КОНФЛИКТЫ</b> на {pr} — upstream ушёл вперёд, нужен ребейз",
                  "de": "⛔ <b>KONFLIKTE</b> bei {pr} — Upstream ist weiter, Rebase nötig"},
 
-  "free_head":  {"en": "🟢 <b>FREE — {n} issues</b>\\n⭐ = good first issue",
-                 "ru": "🟢 <b>СВОБОДНО — {n} задач</b>\\n⭐ = good first issue",
-                 "de": "🟢 <b>FREI — {n} Issues</b>\\n⭐ = good first issue"},
+  "free_head":  {"en": "🟢 <b>FREE — {n} issues</b>\n⭐ = good first issue",
+                 "ru": "🟢 <b>СВОБОДНО — {n} задач</b>\n⭐ = good first issue",
+                 "de": "🟢 <b>FREI — {n} Issues</b>\n⭐ = good first issue"},
   "free_repo":  {"en": "(free: {n})", "ru": "(свободно: {n})", "de": "(frei: {n})"},
-  "free_none":  {"en": "\\n\\nNothing free.", "ru": "\\n\\nСвободных задач нет.", "de": "\\n\\nNichts frei."},
-  "free_mine":  {"en": "\\n<i>our claim {x} is excluded</i>", "ru": "\\n<i>наша заявка {x} в список не входит</i>", "de": "\\n<i>unser Anspruch {x} ist ausgenommen</i>"},
+  "free_none":  {"en": "\n\nNothing free.", "ru": "\n\nСвободных задач нет.", "de": "\n\nNichts frei."},
+  "free_mine":  {"en": "\n<i>our claim {x} is excluded</i>", "ru": "\n<i>наша заявка {x} в список не входит</i>", "de": "\n<i>unser Anspruch {x} ist ausgenommen</i>"},
   "free_claimed":{"en": "claimed by {who}?", "ru": "заявка от {who}?", "de": "beansprucht von {who}?"},
 
-  "taken_head": {"en": "🔒 <b>TAKEN — {n} issues</b>\\n", "ru": "🔒 <b>ЗАНЯТО — {n} задач</b>\\n", "de": "🔒 <b>VERGEBEN — {n} Issues</b>\\n"},
+  "taken_head": {"en": "🔒 <b>TAKEN — {n} issues</b>\n", "ru": "🔒 <b>ЗАНЯТО — {n} задач</b>\n", "de": "🔒 <b>VERGEBEN — {n} Issues</b>\n"},
   "taken_us":   {"en": "US", "ru": "МЫ", "de": "WIR"},
 
-  "pool_head":  {"en": "<b>MOST pool</b>\\n{free} free of {open} open", "ru": "<b>Пул MOST</b>\\nСвободно {free} из {open} открытых", "de": "<b>MOST-Pool</b>\\n{free} frei von {open} offen"},
+  "pool_head":  {"en": "<b>MOST pool</b>\n{free} free of {open} open", "ru": "<b>Пул MOST</b>\nСвободно {free} из {open} открытых", "de": "<b>MOST-Pool</b>\n{free} frei von {open} offen"},
   "pool_repo":  {"en": "{free} of {open}", "ru": "{free} из {open}", "de": "{free} von {open}"},
 
   "pr_none":    {"en": "No PR watched (set WATCH_PR in config.env).", "ru": "PR не отслеживается (задайте WATCH_PR в config.env).", "de": "Kein PR beobachtet (WATCH_PR in config.env setzen)."},
@@ -149,43 +149,43 @@ T = {
   "pr_m_bad":   {"en": "⛔ CONFLICTS", "ru": "⛔ КОНФЛИКТЫ", "de": "⛔ KONFLIKTE"},
   "pr_m_wait":  {"en": "GitHub still computing", "ru": "GitHub ещё считает", "de": "GitHub rechnet noch"},
   "pr_merged":  {"en": " · 🎉 MERGED", "ru": " · 🎉 СМЕРЖЕН", "de": " · 🎉 GEMERGT"},
-  "pr_body":    {"en": "<b>PR {pr}</b>\\nstate: {st}{mg}\\nmerge: {m}\\ncomments: {c}\\nCI: {ci}\\n{link}",
-                 "ru": "<b>PR {pr}</b>\\nсостояние: {st}{mg}\\nслияние: {m}\\nкомментариев: {c}\\nCI: {ci}\\n{link}",
-                 "de": "<b>PR {pr}</b>\\nStatus: {st}{mg}\\nMerge: {m}\\nKommentare: {c}\\nCI: {ci}\\n{link}"},
+  "pr_body":    {"en": "<b>PR {pr}</b>\nstate: {st}{mg}\nmerge: {m}\ncomments: {c}\nCI: {ci}\n{link}",
+                 "ru": "<b>PR {pr}</b>\nсостояние: {st}{mg}\nслияние: {m}\nкомментариев: {c}\nCI: {ci}\n{link}",
+                 "de": "<b>PR {pr}</b>\nStatus: {st}{mg}\nMerge: {m}\nKommentare: {c}\nCI: {ci}\n{link}"},
 
-  "rate_body":  {"en": "<b>GitHub quota</b>\\n{rem} of {lim} left, resets in {mm}m {ss}s\\ntoken: {tok}\\npoll: every {iv}s over {nr} repos",
-                 "ru": "<b>Квота GitHub</b>\\nосталось {rem} из {lim}, сброс через {mm} мин {ss} с\\nтокен: {tok}\\nопрос: раз в {iv} с по {nr} репозиториям",
-                 "de": "<b>GitHub-Kontingent</b>\\n{rem} von {lim} übrig, Reset in {mm}m {ss}s\\nToken: {tok}\\nAbfrage: alle {iv}s über {nr} Repos"},
+  "rate_body":  {"en": "<b>GitHub quota</b>\n{rem} of {lim} left, resets in {mm}m {ss}s\ntoken: {tok}\npoll: every {iv}s over {nr} repos",
+                 "ru": "<b>Квота GitHub</b>\nосталось {rem} из {lim}, сброс через {mm} мин {ss} с\nтокен: {tok}\nопрос: раз в {iv} с по {nr} репозиториям",
+                 "de": "<b>GitHub-Kontingent</b>\n{rem} von {lim} übrig, Reset in {mm}m {ss}s\nToken: {tok}\nAbfrage: alle {iv}s über {nr} Repos"},
   "rate_tok_y": {"en": "yes", "ru": "есть", "de": "ja"},
   "rate_tok_n": {"en": "NO — 60/hr cap", "ru": "НЕТ — потолок 60/час", "de": "NEIN — 60/Std-Limit"},
 
-  "help":       {"en": ("<b>MOST pool watcher</b>\\n"
-                        "Watches 7 repos and pushes:\\n"
-                        "🆕 new issue · 🔒 claimed · 🟢 <b>freed</b>\\n"
-                        "✋ claim requested · 📤 PR for review · ✅ closed\\n"
-                        "🎉 your PR merged · 💬 comment on your PR · ⛔ conflicts\\n\\n"
-                        "<b>Commands</b>\\n"
-                        "/free — what is free, by repo\\n/taken — who holds what\\n"
-                        "/pool — per-repo summary\\n/pr — your PR and its CI\\n"
-                        "/rate — GitHub quota\\n/lang — switch language\\n/help — this message"),
-                 "ru": ("<b>Наблюдатель за пулом MOST</b>\\n"
-                        "Следит за 7 репозиториями и сам присылает:\\n"
-                        "🆕 новая задача · 🔒 задачу заняли · 🟢 <b>задача освободилась</b>\\n"
-                        "✋ кто-то просит заявку · 📤 PR на ревью · ✅ закрыта\\n"
-                        "🎉 наш PR смержен · 💬 комментарий на PR · ⛔ конфликты\\n\\n"
-                        "<b>Команды</b>\\n"
-                        "/free — что свободно, по репозиториям\\n/taken — кто что держит\\n"
-                        "/pool — сводка по репозиториям\\n/pr — наш PR и состояние CI\\n"
-                        "/rate — квота GitHub\\n/lang — сменить язык\\n/help — это сообщение"),
-                 "de": ("<b>MOST-Pool-Watcher</b>\\n"
-                        "Beobachtet 7 Repos und meldet:\\n"
-                        "🆕 neues Issue · 🔒 vergeben · 🟢 <b>frei geworden</b>\\n"
-                        "✋ Anspruch gemeldet · 📤 PR zur Prüfung · ✅ geschlossen\\n"
-                        "🎉 dein PR gemergt · 💬 Kommentar an deinem PR · ⛔ Konflikte\\n\\n"
-                        "<b>Befehle</b>\\n"
-                        "/free — was frei ist, nach Repo\\n/taken — wer was hält\\n"
-                        "/pool — Übersicht nach Repo\\n/pr — dein PR und dessen CI\\n"
-                        "/rate — GitHub-Kontingent\\n/lang — Sprache wechseln\\n/help — diese Nachricht")},
+  "help":       {"en": ("<b>MOST pool watcher</b>\n"
+                        "Watches 7 repos and pushes:\n"
+                        "🆕 new issue · 🔒 claimed · 🟢 <b>freed</b>\n"
+                        "✋ claim requested · 📤 PR for review · ✅ closed\n"
+                        "🎉 your PR merged · 💬 comment on your PR · ⛔ conflicts\n\n"
+                        "<b>Commands</b>\n"
+                        "/free — what is free, by repo\n/taken — who holds what\n"
+                        "/pool — per-repo summary\n/pr — your PR and its CI\n"
+                        "/rate — GitHub quota\n/lang — switch language\n/help — this message"),
+                 "ru": ("<b>Наблюдатель за пулом MOST</b>\n"
+                        "Следит за 7 репозиториями и сам присылает:\n"
+                        "🆕 новая задача · 🔒 задачу заняли · 🟢 <b>задача освободилась</b>\n"
+                        "✋ кто-то просит заявку · 📤 PR на ревью · ✅ закрыта\n"
+                        "🎉 наш PR смержен · 💬 комментарий на PR · ⛔ конфликты\n\n"
+                        "<b>Команды</b>\n"
+                        "/free — что свободно, по репозиториям\n/taken — кто что держит\n"
+                        "/pool — сводка по репозиториям\n/pr — наш PR и состояние CI\n"
+                        "/rate — квота GitHub\n/lang — сменить язык\n/help — это сообщение"),
+                 "de": ("<b>MOST-Pool-Watcher</b>\n"
+                        "Beobachtet 7 Repos und meldet:\n"
+                        "🆕 neues Issue · 🔒 vergeben · 🟢 <b>frei geworden</b>\n"
+                        "✋ Anspruch gemeldet · 📤 PR zur Prüfung · ✅ geschlossen\n"
+                        "🎉 dein PR gemergt · 💬 Kommentar an deinem PR · ⛔ Konflikte\n\n"
+                        "<b>Befehle</b>\n"
+                        "/free — was frei ist, nach Repo\n/taken — wer was hält\n"
+                        "/pool — Übersicht nach Repo\n/pr — dein PR und dessen CI\n"
+                        "/rate — GitHub-Kontingent\n/lang — Sprache wechseln\n/help — diese Nachricht")},
   "lang_set":   {"en": "Language: English. Tap 🌐 or /lang to cycle.",
                  "ru": "Язык: русский. Нажмите 🌐 или /lang для смены.",
                  "de": "Sprache: Deutsch. 🌐 oder /lang zum Wechseln."},
