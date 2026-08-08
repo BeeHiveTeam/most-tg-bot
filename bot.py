@@ -52,12 +52,14 @@ import re
 CLAIM_NOT_NOW = (
     "invited me to claim", "asked me to claim", "invited me to take",
     "would claim", "will claim this once", "claim this once",
-    "as soon as", "statement of intent",
+    # not "as soon as" on its own: it vetoed a real "Claiming this, will push a fix as soon
+    # as tests pass". The deferred-claim case it used to cover is caught by "would claim".
+    "claim as soon as", "statement of intent",
 )
 
 # Explicit "not claiming" — these veto a match no matter what else the comment says.
 CLAIM_NEGATIONS = (
-    "not claiming", "not a claim", "won't claim", "will not claim", "no claim",
+    "not claiming", "not a claim", "won't claim", "will not claim",
     "not taking this", "neither of those was a claim", "not claiming this",
 )
 
@@ -71,16 +73,15 @@ CLAIM_PATTERNS = tuple(re.compile(p, re.I) for p in (
     # registered/assigned".
     r"\bclaim(?:ing)?\s+(?:this|it|#?\d)",
     r"^\s*claiming\b",
-    r"\btak(?:ing|e|e\s+up)?\s+(?:this|it|#?\d)",    # taking this / take this / take it / take #12
+    r"\btak(?:ing|e|e\s+up)?\s+(?:this|it|#?\d)(?!\w)(?!\s+(?:into|from|the\s+wrong)\b)",  # taking this, not "into account"
     r"\bi(?:'|)?ll\s+tak",                            # I'll take
-    r"\b(?:want|wanna|like|wish|plan)\s+to\s+\S{0,3}\s*(?:tak|tackl|work|pick|grab|do)",
+    r"\b(?:want|wanna|like|wish|plan)\s+to\s+\S{0,3}\s*(?:tak(?!e\s+it\s+from)|tackl|work(?!\s+around)|pick|grab|do)",
     r"\bwant\s+\S{0,2}\s+tackl",                     # "want ti tackle" (typo)
-    r"\b(?:can|may|could)\s+i\s+\S{0,4}\s*(?:tak|hav|grab|do)\b",  # can I take
-    r"\bi(?:'|)?ll\s+pick\s+(?:this|it)\s*(?:up)?",  # I'll pick this up / pick it
-    r"\bpick(?:ing)?\s+(?:this|it)\s+up\b",
-    r"\bi\s+(?:want|wanna|wish)\s+to\s+work\b",
+    r"\b(?:can|may|could)\s+i\s+(?:\w+\s+)?(?:take|have|grab|do)\b",  # can I take / may I have
+    # First person only: "For anyone picking this up" is an announcement, not a claim.
+    r"\bi(?:'|)?(?:ll|m| am| will)?\s*(?:be\s+)?pick(?:ing)?\s+(?:this|it)\s*(?:up)?\b",
+    r"\bi\s+(?:want|wanna|wish)\s+to\s+work\b(?!\s+around\b)",
     r"\bgrabbing\s+(?:this|it)\b",
-    r"\bmine\b.*\bnow\b",
 ))
 
 
@@ -95,7 +96,7 @@ def _unquoted(text):
     """
     t = re.sub(r"^\s*>.*$", " ", text or "", flags=re.M)   # markdown blockquotes
     t = re.sub(r"`[^`]*`", " ", t)                          # inline code
-    t = re.sub(r"\"[^\"]*\"", " ", t)                        # straight double quotes
+    t = re.sub(r'(?<!\d)"[^"\n]{0,200}"', " ", t)           # straight quotes; not after a digit (5"), bounded
     t = re.sub(r"[\u201c\u201d][^\u201c\u201d]*[\u201c\u201d]", " ", t)  # curly quotes
     return t
 
@@ -106,6 +107,10 @@ def is_claim(body):
     if any(neg in b for neg in CLAIM_NEGATIONS):
         return False
     if any(x in b for x in CLAIM_NOT_NOW):
+        return False
+    # A release comment often mentions the claim it gives up ("Withdrawing my claim — happy to
+    # let them take it"); giving one up is the opposite of making one.
+    if is_release(b):
         return False
     return any(p.search(b) for p in CLAIM_PATTERNS)
 
@@ -250,7 +255,14 @@ def load_cfg():
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
-            cfg[k.strip()] = v.strip().strip('"').strip("'")
+            # Strip an inline comment: `POLL_INTERVAL=600  # every 10 min` fed "600  # every…"
+            # to int(), which died at import and sent systemd into a restart loop.
+            v = v.split("#", 1)[0]
+            v = v.strip().strip('"').strip("'")
+            # A trailing "  # note" on a numeric value would crash int() later; drop it.
+            if " #" in v:
+                v = v.split(" #", 1)[0].strip()
+            cfg[k.strip()] = v
     for required in ("TG_TOKEN", "TG_CHAT_ID"):
         if not cfg.get(required):
             sys.exit(f"{required} is not set in {CFG_PATH}")
@@ -286,18 +298,30 @@ def watched_pr(state):
     if not MY_LOGIN:
         return ""
     best = ""
-    best_num = -1
+    best_created = ""
     for repo, prs in (state.get("prs") or {}).items():
         for num, info in prs.items():
             if (info.get("author") or "").lower() != MY_LOGIN.lower():
                 continue
-            if int(num) > best_num:
-                best_num, best = int(num), f"{repo}#{num}"
+            # created_at, not the number: issue numbers are per-repo, so #7 in one repo would
+            # lose to #120 in another regardless of age.
+            created = info.get("created_at", "")
+            if created > best_created:
+                best_created, best = created, f"{repo}#{num}"
     return best
 # Pool maintainers post claim bookkeeping ("approved, it's yours", "one claimed issue at a
 # time") that can read like a claim. Their comments are never a fresh claim. Comma-separated
 # logins; defaults to the pool's admin.
-MAINTAINERS = {m.strip().lower() for m in CFG.get("MAINTAINERS", "portdeveloper").split(",") if m.strip()}          # e.g. portdeveloper/nad-agent#42
+MAINTAINERS = {
+    m.strip().lower()
+    for m in CFG.get(
+        # Every pool-repo owner, not just the pool admin: owners post announcements on their own
+        # issues ("For anyone picking this up — worth two minutes first"), and reading those as
+        # claims marked 20 free moss issues as taken.
+        "MAINTAINERS", "portdeveloper,nishuzumi,haythemsellami,therealharpaljadeja"
+    ).split(",")
+    if m.strip()
+}          # e.g. portdeveloper/nad-agent#42
 # Our own claim, "owner/repo#number". The maintainer approves in a comment and does not always
 # set an assignee — issue #2 is ours and shows no assignee — so without this the watcher would
 # list our own work as free.
@@ -308,9 +332,12 @@ DEFAULT_LANG_CFG = CFG.get("LANG", "en").strip().lower()
 if DEFAULT_LANG_CFG in ("en", "ru", "de"):
     DEFAULT_LANG = DEFAULT_LANG_CFG
 # Without a token GitHub allows 60 requests/hour, and one poll costs one request per repo.
-# 7 repos every 10 minutes is 42/hour, which fits with headroom for the /commands. With a
+# Tokenless the ceiling is 60/hour and a cycle costs up to 10 requests (7 repos + one claim
+# scan + one backfill + the PR check), so 12 minutes leaves real headroom for /commands. With a
 # token the ceiling is 5000/hour and a one-minute poll is comfortable.
-POLL_INTERVAL = int(CFG.get("POLL_INTERVAL", "60" if GH_TOKEN else "600"))
+# Tokenless budget: ~10 requests per cycle; at 600 s that is exactly the 60/hour ceiling,
+# so any manual /pr tipped it into 403. 720 s leaves headroom.
+POLL_INTERVAL = int(CFG.get("POLL_INTERVAL", "60" if GH_TOKEN else "720"))
 
 CTX = ssl.create_default_context()
 
@@ -451,7 +478,14 @@ def fetch_open(repo, max_pages=5):
 
 
 def pr_snapshot(prs):
-    return {str(p["number"]): {"title": p["title"], "author": p["user"]["login"]} for p in prs}
+    return {
+        str(p["number"]): {
+            "title": p["title"],
+            "author": p["user"]["login"],
+            "created_at": p.get("created_at", ""),
+        }
+        for p in prs
+    }
 
 
 def diff_prs(repo, old, new, seeded, watched=""):
@@ -488,7 +522,10 @@ def snapshot(issues):
             # The author can claim in the issue body itself ("Claiming this one: PR to follow"),
             # which no comment scan would ever see. The body arrives with the list, so keeping
             # the verdict costs nothing and closes that hole.
-            "body_claim": is_claim(i.get("body")) and not is_release(i.get("body")),
+            # An owner describing their own issue is not claiming it, however the text reads.
+            "body_claim": is_claim(i.get("body"))
+            and not is_release(i.get("body"))
+            and ((i.get("user") or {}).get("login", "").lower() not in MAINTAINERS),
         }
         for i in issues
     }
@@ -502,22 +539,34 @@ def issue_url(repo, num):
     return f"https://github.com/{repo}/issues/{num}"
 
 
+# latest_claim_comment outcomes. An HTTP error must stay distinguishable from "no claim":
+# without a token a 403 is routine, and treating it as an answer silently turned "unknown"
+# into "free". A release is its own outcome so a claim made in the issue BODY can be undone
+# by a "withdrawing this" comment — the body never changes, so only the comment can clear it.
+SCAN_ERROR = "error"
+SCAN_RELEASED = "released"
+
+
 def latest_claim_comment(repo, num):
-    """The newest comment that reads like a claim, or None. One request; used sparingly."""
-    data, err = gh(f"/repos/{repo}/issues/{num}/comments?per_page=100")
-    if err or not data:
+    """(claimer, text) for the newest live claim, None if there is none, SCAN_RELEASED if the
+    newest signal is a release, or SCAN_ERROR when the comments could not be read at all."""
+    # newest first: the default order is oldest-first, so page 1 of a 100+-comment issue would
+    # be its OLDEST comments and a late claim or release would be invisible forever.
+    data, err = gh(f"/repos/{repo}/issues/{num}/comments?sort=created&direction=desc&per_page=100")
+    if err:
+        return SCAN_ERROR
+    if not data:
         return None
     # Skip the pool maintainer's bookkeeping. When a claim is approved, the maintainer posts a
     # confirmation carrying an invisible "<!-- most-claims -->" marker ("the claim is
     # registered", "you already hold a claim on ..."). Those read like a claim but announce
     # someone else's, so a marker comment is never itself a fresh claim.
-    for c in reversed(data):
+    for c in data:
         body = c.get("body") or ""
         login = (c.get("user") or {}).get("login", "")
-        # Walking newest-first: a release means everything older is stale, so stop — the issue
-        # is free regardless of any earlier "taking this".
+        # Walking newest-first: a release means everything older is stale.
         if is_release(body):
-            return None
+            return SCAN_RELEASED
         # A maintainer's confirmation carries "<!-- most-claims -->", but their plain-text
         # approvals ("approved, it's yours") do not — skip the maintainer either way.
         if "<!-- most-claims -->" in body or login.lower() in MAINTAINERS:
@@ -567,9 +616,17 @@ def backfill_claims(repo, snap, state, budget):
             continue          # assigned issues need no comment scan; the field is authoritative
         budget[0] -= 1
         hit = latest_claim_comment(repo, num)
+        if hit == SCAN_ERROR:
+            # Could not read the comments — leave the issue unknown rather than minting a
+            # verdict from a failed request. It will be retried on a later cycle.
+            continue
         checked[key] = int(time.time())
-        if hit:
+        if hit == SCAN_RELEASED:
+            claims.pop(key, None)
+            state.setdefault("claim_released", {})[key] = True
+        elif hit:
             claims[key] = hit[0]
+            state.setdefault("claim_released", {}).pop(key, None)
         else:
             claims.pop(key, None)
 
@@ -605,7 +662,7 @@ def diff_repo(repo, old, new, seeded):
     return out
 
 
-def diff_comments(repo, old, new, budget, state_claims):
+def diff_comments(repo, old, new, budget, state):
     """
     Someone commenting on a free issue is the earliest signal there is — the assignee only
     appears once a maintainer approves, and by then it is decided. Costs one request per
@@ -614,22 +671,29 @@ def diff_comments(repo, old, new, budget, state_claims):
     out = []
     # Who we have already flagged as claiming each issue, so a claimant's follow-up comment
     # ("any update?") does not re-fire the same "✋ ПРОСЯТ ЗАЯВКУ" every cycle.
-    flagged = state_claims
+    flagged = state.setdefault("claim_flags", {})
+    released = state.setdefault("claim_released", {})
     for num, cur in new.items():
-        if budget[0] <= 0:
-            break
         prev = old.get(num)
         if not prev or cur["comments"] <= prev["comments"] or cur["assignee"]:
             continue
         # Our own claim is ours; a new comment on it must not fire "someone is claiming this".
-        # cur["assignee"] is falsy here (checked above), so this is the no-assignee case.
         if mine(repo, num, cur["assignee"]):
             continue
+        if budget[0] <= 0 or (hit := latest_claim_comment(repo, num)) == SCAN_ERROR:
+            # Not scanned — either out of budget or the read failed. Roll the stored comment
+            # count back so the growth is still visible next cycle; the snapshot is written
+            # regardless, and swallowing the count here made the miss permanent.
+            cur["comments"] = prev["comments"]
+            continue
         budget[0] -= 1
-        hit = latest_claim_comment(repo, num)
         key = f"{repo}#{num}"
-        if hit:
+        if hit == SCAN_RELEASED:
+            flagged.pop(key, None)
+            released[key] = True
+        elif hit:
             who, text = hit
+            released.pop(key, None)
             if flagged.get(key) == who:
                 continue  # already alerted on this person's claim
             flagged[key] = who
@@ -643,9 +707,19 @@ def diff_comments(repo, old, new, budget, state_claims):
 
 def check_pr(state):
     """Watch one pull request of ours: reviews, comments, merge, CI."""
-    target = watched_pr(state)
+    # Follow the target chosen LAST cycle. A merged PR disappears from state["prs"] in the
+    # same cycle that merges it, before this runs — so deciding from the fresh snapshot meant
+    # the auto-picked target silently jumped and the MERGED alert could never fire.
+    target = state.get("pr_target") or watched_pr(state)
+    state["pr_target"] = watched_pr(state)
     if not target or "#" not in target:
         return []
+    if state.get("pr_snapshot_of") != target:
+        # New target: the old PR\'s snapshot must not be compared against it — that produced
+        # false "+N comments" and muted the first real conflict alert.
+        state.pop("pr", None)
+        state.pop("pr_last_mergeable", None)
+        state["pr_snapshot_of"] = target
     repo, num = target.split("#", 1)
     pr, err = gh(f"/repos/{repo}/pulls/{num}")
     if err:
@@ -710,10 +784,12 @@ def claim_state(repo, num, v, state):
     """
     if v["assignee"]:
         return "taken"
-    if v.get("body_claim"):
-        return "taken"
     key = f"{repo}#{num}"
     if key in state.get("claim_flags", {}):
+        return "taken"
+    # A claim made in the issue body is undone by a release comment: the body never changes,
+    # so without this override a withdrawn body-claim would read as taken forever.
+    if v.get("body_claim") and key not in state.get("claim_released", {}):
         return "taken"
     if key in state.get("claim_checked", {}):
         return "free"
@@ -960,7 +1036,7 @@ def main():
             old = state["repos"].get(repo, {})
             alerts += diff_repo(repo, old, new, seeded)
             if seeded:
-                alerts += diff_comments(repo, old, new, budget, state.setdefault("claim_flags", {}))
+                alerts += diff_comments(repo, old, new, budget, state)
             state["repos"][repo] = new
 
             new_prs = pr_snapshot(prs)
@@ -969,6 +1045,16 @@ def main():
 
             if repo not in seen:
                 seen.append(repo)
+
+            # P2-9: verdicts must not outlive their issues. A closed issue's flag would make a
+            # reopened one read as taken; an assignee supersedes any comment-claim bookkeeping.
+            prefix = f"{repo}#"
+            for store in ("claim_flags", "claim_checked", "claim_released"):
+                d = state.get(store, {})
+                for key in [k for k in d if k.startswith(prefix)]:
+                    num = key[len(prefix):]
+                    if num not in new or (store != "claim_checked" and new[num]["assignee"]):
+                        d.pop(key, None)
 
             # Fill in claim status for issues claimed before we started — but only with quota
             # to spare. Reading history is the lowest-priority work here: going blind on new

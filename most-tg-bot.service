@@ -2,13 +2,19 @@
 Description=MOST pool Telegram watcher (new/claimed/freed issues + our PR)
 After=network-online.target
 Wants=network-online.target
+# The start limit belongs to [Unit]: in [Service] systemd ignores it, so a config error at
+# import would exit(1) and restart forever, 15 s apart, without ever tripping a limit.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
 User=ubuntu
 WorkingDirectory=/opt/most-tg-bot
 ExecStart=/usr/bin/python3 /opt/most-tg-bot/bot.py
-Restart=always
+# on-failure with a start limit: a config error at import used to exit(1) and Restart=always
+# looped it forever, 15 s apart, without ever tripping a limit.
+Restart=on-failure
 RestartSec=15
 StandardOutput=journal
 StandardError=journal

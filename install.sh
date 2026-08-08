@@ -20,6 +20,8 @@ set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/BeeHiveTeam/most-tg-bot/main"
 DEST="${MOST_BOT_DIR:-/opt/most-tg-bot}"
+# Canonicalise before validating: /opt/../etc passed the system-dir check literally.
+case "$DEST" in /*) DEST="$(realpath -m "$DEST")" ;; esac
 SERVICE="most-tg-bot"
 
 # Colours only when stdout is a terminal, so piping to a file stays readable.
@@ -143,7 +145,7 @@ if [ "$WRITE_CFG" -eq 1 ]; then
    Either download and run it directly:
      curl -fsSLO $REPO_RAW/install.sh && bash install.sh
    or supply the values up front:
-     TG_TOKEN=... TG_CHAT_ID=... [GH_TOKEN=...] [MY_LOGIN=...] [BOT_LANG=en] bash install.sh"
+     TG_TOKEN=... TG_CHAT_ID=... [MOST_GH_TOKEN=...] [MY_LOGIN=...] [BOT_LANG=en] bash install.sh"
   fi
 
   say ""
@@ -181,8 +183,12 @@ for u in d.get("result", []):
     m = u.get("message") or u.get("channel_post") or {}
     c = (m.get("chat") or {}).get("id")
     if c is not None and c not in ids: ids.append(c)
-print(ids[-1] if ids else "")' || true)
-    if [ -n "$TG_CHAT" ]; then ok "   detected chat id: $TG_CHAT"
+print(" ".join(str(i) for i in ids))' || true)
+    set -- $TG_CHAT
+    if [ "$#" -eq 1 ]; then TG_CHAT="$1"; ok "   detected chat id: $TG_CHAT"
+    elif [ "$#" -gt 1 ]; then
+      # More than one chat wrote to the bot: guessing would send every alert to a stranger.
+      die "Several chats have messaged the bot ($*). Set TG_CHAT_ID to the one you want."
     else die "Could not detect a chat id. Send your bot a message first, then re-run."; fi
   fi
 
