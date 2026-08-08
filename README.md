@@ -26,6 +26,8 @@ Watching all of them by hand is how you learn an issue was claimed the morning a
 - 🟢 **freed** — a claim was released and the slot is open again (the alert worth waking for)
 - ✋ **claim requested** — someone commented a claim on a free issue, the earliest signal there
   is: the assignee only appears once a maintainer approves, and by then it is decided
+- 📤 **PR opened for review** — by whom, anywhere in the pool: a sign that contributor is
+  about to earn a contribution day and free their claimed issue
 - ✅ **closed**
 - 🎉 **your PR merged** · 💬 **new comment on your PR** · ⛔ **your PR went conflict-dirty**
 

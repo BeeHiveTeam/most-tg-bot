@@ -221,12 +221,40 @@ def esc(s):
 
 # ── github ──────────────────────────────────────────────────────────────────
 
-def fetch_issues(repo):
-    """Open issues only, pull requests filtered out. Returns (list, error)."""
+def fetch_open(repo):
+    """
+    Open issues AND pull requests, from a single request.
+
+    The /issues endpoint already returns PRs (each carries a "pull_request" key). We used to
+    throw them away; keeping them costs nothing and lets us alert when a rival opens a PR — a
+    sign they are about to earn a contribution day and free their claimed issue soon.
+    """
     data, err = gh(f"/repos/{repo}/issues?state=open&per_page=100")
     if err:
-        return None, err
-    return [i for i in data if "pull_request" not in i], None
+        return None, None, err
+    issues = [i for i in data if "pull_request" not in i]
+    prs = [i for i in data if "pull_request" in i]
+    return issues, prs, None
+
+
+def pr_snapshot(prs):
+    return {str(p["number"]): {"title": p["title"], "author": p["user"]["login"]} for p in prs}
+
+
+def diff_prs(repo, old, new):
+    """Alert when a pull request is newly opened. Empty `old` = first sight, seed silently."""
+    if not old:
+        return []
+    out = []
+    for num, cur in new.items():
+        if num in old:
+            continue
+        # Our own PR is covered in detail by check_pr; do not double-report it here.
+        if f"{repo}#{num}" == (WATCH_PR or ""):
+            continue
+        out.append(f"📤 <b>PR НА РЕВЬЮ</b> — {esc(cur['author'])}, {esc(short(repo))} #{num}\n"
+                   f"{esc(cur['title'])}\nhttps://github.com/{repo}/pull/{num}")
+    return out
 
 
 def snapshot(issues):
@@ -563,7 +591,7 @@ def main():
         budget = [8 if GH_TOKEN else 1]
 
         for repo in REPOS:
-            issues, err = fetch_issues(repo)
+            issues, prs, err = fetch_open(repo)
             if err:
                 print(f"{repo}: {err}", flush=True)
                 if "rate limit" in err.lower() or "403" in err:
@@ -575,6 +603,10 @@ def main():
             if old:
                 alerts += diff_comments(repo, old, new, budget)
             state["repos"][repo] = new
+
+            new_prs = pr_snapshot(prs)
+            alerts += diff_prs(repo, state.get("prs", {}).get(repo, {}), new_prs)
+            state.setdefault("prs", {})[repo] = new_prs
 
         alerts += check_pr(state)
 
