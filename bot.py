@@ -113,6 +113,9 @@ T = {
 
   "a_new":      {"en": "🆕 <b>NEW ISSUE</b>", "ru": "🆕 <b>НОВАЯ ЗАДАЧА</b>", "de": "🆕 <b>NEUES ISSUE</b>"},
   "a_claimed":  {"en": "🔒 <b>CLAIMED</b> by", "ru": "🔒 <b>ЗАНЯЛИ</b> —", "de": "🔒 <b>VERGEBEN</b> an"},
+  "a_claim_lost":{"en": "🚨 <b>YOUR CLAIM WAS REASSIGNED</b> to",
+                  "ru": "🚨 <b>НАШУ ЗАЯВКУ ПЕРЕДАЛИ</b> —",
+                  "de": "🚨 <b>UNSER ANSPRUCH WURDE ÜBERTRAGEN</b> an"},
   "a_freed":    {"en": "🟢 <b>FREED</b>", "ru": "🟢 <b>ОСВОБОДИЛАСЬ</b>", "de": "🟢 <b>FREI</b>"},
   "a_freed_was":{"en": "— was", "ru": "— была у", "de": "— war bei"},
   "a_closed":   {"en": "✅ <b>CLOSED</b>", "ru": "✅ <b>ЗАКРЫТА</b>", "de": "✅ <b>GESCHLOSSEN</b>"},
@@ -239,6 +242,8 @@ MAINTAINERS = {m.strip().lower() for m in CFG.get("MAINTAINERS", "portdeveloper"
 # set an assignee — issue #2 is ours and shows no assignee — so without this the watcher would
 # list our own work as free.
 MY_CLAIM = CFG.get("MY_CLAIM", "").strip()
+# Our GitHub login, so a claim assigned to us still reads as ours.
+MY_LOGIN = CFG.get("MY_LOGIN", "").strip()
 DEFAULT_LANG_CFG = CFG.get("LANG", "en").strip().lower()
 if DEFAULT_LANG_CFG in ("en", "ru", "de"):
     DEFAULT_LANG = DEFAULT_LANG_CFG
@@ -479,7 +484,11 @@ def diff_repo(repo, old, new, seeded):
                 out.append(f"{tr('a_freed')} {esc(short(repo))} #{num} {tr('a_freed_was')} {esc(prev['assignee'])}\n"
                            f"{esc(cur['title'])}\n<i>{esc(tag)}</i>\n{link}")
             else:
-                out.append(f"{tr('a_claimed')} {esc(cur['assignee'])}, {esc(short(repo))} #{num}\n"
+                # Losing our own claim is not the same event as any issue being claimed: it
+                # ends our slot and needs a rebase/appeal decision, so it gets its own alert.
+                lost = MY_CLAIM == f"{repo}#{num}" and not mine(repo, num, cur["assignee"])
+                head = tr("a_claim_lost") if lost else tr("a_claimed")
+                out.append(f"{head} {esc(cur['assignee'])}, {esc(short(repo))} #{num}\n"
                            f"{esc(cur['title'])}\n{link}")
     for num, prev in old.items():
         if num not in new:
@@ -504,7 +513,8 @@ def diff_comments(repo, old, new, budget, state_claims):
         if not prev or cur["comments"] <= prev["comments"] or cur["assignee"]:
             continue
         # Our own claim is ours; a new comment on it must not fire "someone is claiming this".
-        if mine(repo, num):
+        # cur["assignee"] is falsy here (checked above), so this is the no-assignee case.
+        if mine(repo, num, cur["assignee"]):
             continue
         budget[0] -= 1
         hit = latest_claim_comment(repo, num)
@@ -580,8 +590,18 @@ def short(repo):
     return repo.split("/", 1)[1] if "/" in repo else repo
 
 
-def mine(repo, num):
-    return MY_CLAIM and MY_CLAIM == f"{repo}#{num}"
+def mine(repo, num, assignee=None):
+    """
+    Is this issue ours?
+
+    MY_CLAIM exists because the pool approves claims in a comment and does not always set the
+    assignee — without it the bot would report our own issue as free. But it must not override
+    reality in the other direction: once GitHub shows someone else as the assignee, the claim
+    has moved and saying "US" would be a comfortable lie. Assignee wins when it disagrees.
+    """
+    if not MY_CLAIM or MY_CLAIM != f"{repo}#{num}":
+        return False
+    return not assignee or assignee.lower() == MY_LOGIN.lower()
 
 
 def cmd_free(state):
@@ -590,7 +610,7 @@ def cmd_free(state):
     for repo in REPOS:
         snap = state.get("repos", {}).get(repo, {})
         flags = state.get("claim_flags", {})
-        free = [(n, v) for n, v in snap.items() if not v["assignee"] and not mine(repo, n)]
+        free = [(n, v) for n, v in snap.items() if not v["assignee"] and not mine(repo, n, v["assignee"])]
         if not free:
             continue
         total += len(free)
@@ -616,14 +636,14 @@ def cmd_taken(state):
     blocks, total = [], 0
     for repo in REPOS:
         snap = state.get("repos", {}).get(repo, {})
-        held = [(n, v) for n, v in snap.items() if v["assignee"] or mine(repo, n)]
+        held = [(n, v) for n, v in snap.items() if v["assignee"] or mine(repo, n, v["assignee"])]
         if not held:
             continue
         total += len(held)
         rows = [f"\n<b>{esc(short(repo))}</b>"]
         for n, v in sorted(held, key=lambda x: int(x[0])):
-            who = tr("taken_us") if mine(repo, n) else esc(v["assignee"])
-            mark = "🟡" if mine(repo, n) else "🔒"
+            who = tr("taken_us") if mine(repo, n, v["assignee"]) else esc(v["assignee"])
+            mark = "🟡" if mine(repo, n, v["assignee"]) else "🔒"
             rows.append(f'{mark} <a href="{issue_url(repo, n)}">#{n}</a> <b>{who}</b> — {esc(v["title"][:52])}')
         blocks.append("\n".join(rows))
     return tr("taken_head", n=total) + "\n".join(blocks)
@@ -634,7 +654,7 @@ def cmd_pool(state):
     rows, t_open, t_free, t_gfi = [], 0, 0, 0
     for repo in REPOS:
         snap = state.get("repos", {}).get(repo, {})
-        free = [v for n, v in snap.items() if not v["assignee"] and not mine(repo, n)]
+        free = [v for n, v in snap.items() if not v["assignee"] and not mine(repo, n, v["assignee"])]
         gfi = sum(1 for v in free if is_gfi(v["labels"]))
         t_open += len(snap); t_free += len(free); t_gfi += gfi
         bar = "🟢" if free else "⚪"
