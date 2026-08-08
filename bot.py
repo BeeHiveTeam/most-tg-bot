@@ -135,6 +135,9 @@ T = {
                  "ru": "🟢 <b>СВОБОДНО — {n} задач</b>\n⭐ = good first issue",
                  "de": "🟢 <b>FREI — {n} Issues</b>\n⭐ = good first issue"},
   "free_repo":  {"en": "(free: {n})", "ru": "(свободно: {n})", "de": "(frei: {n})"},
+  "free_unknown":{"en": "\n<i>{n} more not checked yet — comments unread, claim unknown</i>",
+                  "ru": "\n<i>ещё {n} не проверены — комментарии не прочитаны, заявка неизвестна</i>",
+                  "de": "\n<i>{n} weitere noch ungeprüft — Kommentare ungelesen, Anspruch unbekannt</i>"},
   "free_none":  {"en": "\n\nNothing free.", "ru": "\n\nСвободных задач нет.", "de": "\n\nNichts frei."},
   "free_mine":  {"en": "\n<i>our claim {x} is excluded</i>", "ru": "\n<i>наша заявка {x} в список не входит</i>", "de": "\n<i>unser Anspruch {x} ist ausgenommen</i>"},
   "free_claimed":{"en": "claimed by {who}?", "ru": "заявка от {who}?", "de": "beansprucht von {who}?"},
@@ -143,6 +146,7 @@ T = {
   "taken_us":   {"en": "US", "ru": "МЫ", "de": "WIR"},
 
   "pool_head":  {"en": "<b>MOST pool</b>\n{free} free of {open} open", "ru": "<b>Пул MOST</b>\nСвободно {free} из {open} открытых", "de": "<b>MOST-Pool</b>\n{free} frei von {open} offen"},
+  "pool_unknown":{"en": " · {n} unchecked", "ru": " · {n} не проверено", "de": " · {n} ungeprüft"},
   "pool_repo":  {"en": "{free} of {open}", "ru": "{free} из {open}", "de": "{free} von {open}"},
 
   "pr_none":    {"en": "No PR watched (set WATCH_PR in config.env).", "ru": "PR не отслеживается (задайте WATCH_PR в config.env).", "de": "Kein PR beobachtet (WATCH_PR in config.env setzen)."},
@@ -448,6 +452,10 @@ def snapshot(issues):
             "assignee": (i.get("assignee") or {}).get("login"),
             "labels": sorted(l["name"] for l in i["labels"]),
             "comments": i["comments"],
+            # The author can claim in the issue body itself ("Claiming this one: PR to follow"),
+            # which no comment scan would ever see. The body arrives with the list, so keeping
+            # the verdict costs nothing and closes that hole.
+            "body_claim": is_claim(i.get("body")) and not is_release(i.get("body")),
         }
         for i in issues
     }
@@ -487,6 +495,51 @@ def latest_claim_comment(repo, num):
 
 
 # ── diffing ─────────────────────────────────────────────────────────────────
+
+def quota_left():
+    """
+    Remaining core-API requests, or None if it cannot be read.
+
+    /rate_limit is documented as not counting against the limit, so this is free to ask and
+    lets the backfill throttle itself instead of guessing from a static budget.
+    """
+    data, err = gh("/rate_limit")
+    if err or not isinstance(data, dict):
+        return None
+    try:
+        return int(data["resources"]["core"]["remaining"])
+    except Exception:
+        return None
+
+
+def backfill_claims(repo, snap, state, budget):
+    """
+    Learn about claims that were made before we started watching.
+
+    diff_comments only fires when the comment count grows, so an issue claimed before the bot
+    first saw it stays invisible forever — which is why /free listed nine issues that other
+    people already held. This walks unchecked issues and reads their comments once, cheapest
+    first, bounded by the same request budget.
+
+    Nothing here asserts "free". An issue we have not read yet is recorded as unknown, and the
+    commands say so, because reporting an unverified issue as free is the failure we are fixing.
+    """
+    checked = state.setdefault("claim_checked", {})
+    claims = state.setdefault("claim_flags", {})
+    for num, v in sorted(snap.items(), key=lambda kv: -int(kv[0])):
+        if budget[0] <= 0:
+            break
+        key = f"{repo}#{num}"
+        if key in checked or v["assignee"]:
+            continue          # assigned issues need no comment scan; the field is authoritative
+        budget[0] -= 1
+        hit = latest_claim_comment(repo, num)
+        checked[key] = int(time.time())
+        if hit:
+            claims[key] = hit[0]
+        else:
+            claims.pop(key, None)
+
 
 def diff_repo(repo, old, new, seeded):
     """Alerts for one repo. Unseeded repo seeds silently; an empty snapshot on a seen repo is
@@ -614,6 +667,26 @@ def short(repo):
     return repo.split("/", 1)[1] if "/" in repo else repo
 
 
+def claim_state(repo, num, v, state):
+    """
+    "taken" | "free" | "unknown" for one issue.
+
+    Three states because the honest answer to "is this free?" is sometimes "we have not looked".
+    An assignee is authoritative. Otherwise the answer depends on whether we have read the
+    comments: a scanned issue with no live claim is free, an unscanned one is unknown.
+    """
+    if v["assignee"]:
+        return "taken"
+    if v.get("body_claim"):
+        return "taken"
+    key = f"{repo}#{num}"
+    if key in state.get("claim_flags", {}):
+        return "taken"
+    if key in state.get("claim_checked", {}):
+        return "free"
+    return "unknown"
+
+
 def mine(repo, num, assignee=None):
     """
     Is this issue ours?
@@ -629,12 +702,16 @@ def mine(repo, num, assignee=None):
 
 
 def cmd_free(state):
-    """Every unclaimed issue, grouped by repo, with difficulty and a link."""
-    blocks, total = [], 0
+    """Every verified-unclaimed issue, grouped by repo, with difficulty and a link."""
+    blocks, total, unknown = [], 0, 0
     for repo in REPOS:
         snap = state.get("repos", {}).get(repo, {})
-        flags = state.get("claim_flags", {})
-        free = [(n, v) for n, v in snap.items() if not v["assignee"] and not mine(repo, n, v["assignee"])]
+        # Only issues we have actually read the comments for. An unscanned issue is counted
+        # under "unknown" rather than presented as free — the pool approves claims in comments,
+        # so an empty assignee field alone proves nothing.
+        free = [(n, v) for n, v in snap.items()
+                if claim_state(repo, n, v, state) == "free" and not mine(repo, n, v["assignee"])]
+        unknown += sum(1 for n, v in snap.items() if claim_state(repo, n, v, state) == "unknown")
         if not free:
             continue
         total += len(free)
@@ -645,11 +722,11 @@ def cmd_free(state):
             tag = f" <i>[{esc(d)}]</i>" if d and not is_gfi(v["labels"]) else ""
             # No assignee, but someone claimed it in a comment (the pool approves in comments):
             # mark it so the list does not read as genuinely open.
-            claimer = flags.get(f"{repo}#{n}")
-            note = f" <i>· {tr('free_claimed', who=esc(claimer))}</i>" if claimer else ""
-            rows.append(f'{star}<a href="{issue_url(repo, n)}">#{n}</a> {esc(v["title"][:64])}{tag}{note}')
+            rows.append(f'{star}<a href="{issue_url(repo, n)}">#{n}</a> {esc(v["title"][:64])}{tag}')
         blocks.append("\n".join(rows))
     head = tr("free_head", n=total)
+    if unknown:
+        head += tr("free_unknown", n=unknown)
     if MY_CLAIM:
         head += tr("free_mine", x=esc(MY_CLAIM))
     return head + "\n" + "\n".join(blocks) if blocks else head + tr("free_none")
@@ -660,14 +737,20 @@ def cmd_taken(state):
     blocks, total = [], 0
     for repo in REPOS:
         snap = state.get("repos", {}).get(repo, {})
-        held = [(n, v) for n, v in snap.items() if v["assignee"] or mine(repo, n, v["assignee"])]
+        # "taken" covers both an assignee and a live claim comment: the pool approves in
+        # comments and does not always set the field, so assignee alone under-reports.
+        held = [(n, v) for n, v in snap.items()
+                if claim_state(repo, n, v, state) == "taken" or mine(repo, n, v["assignee"])]
         if not held:
             continue
         total += len(held)
         rows = [f"\n<b>{esc(short(repo))}</b>"]
         for n, v in sorted(held, key=lambda x: int(x[0])):
-            who = tr("taken_us") if mine(repo, n, v["assignee"]) else esc(v["assignee"])
-            mark = "🟡" if mine(repo, n, v["assignee"]) else "🔒"
+            who = (tr("taken_us") if mine(repo, n, v["assignee"])
+                   else esc(v["assignee"] or state.get("claim_flags", {}).get(f"{repo}#{n}", "?")))
+            # 🔒 assigned by the maintainer · 📝 claimed in a comment, not yet assigned
+            mark = ("🟡" if mine(repo, n, v["assignee"])
+                    else "🔒" if v["assignee"] else "📝")
             rows.append(f'{mark} <a href="{issue_url(repo, n)}">#{n}</a> <b>{who}</b> — {esc(v["title"][:52])}')
         blocks.append("\n".join(rows))
     return tr("taken_head", n=total) + "\n".join(blocks)
@@ -675,17 +758,21 @@ def cmd_taken(state):
 
 def cmd_pool(state):
     """One line per repo: how much is open, how much of it is up for grabs."""
-    rows, t_open, t_free, t_gfi = [], 0, 0, 0
+    rows, t_open, t_free, t_gfi, t_unknown = [], 0, 0, 0, 0
     for repo in REPOS:
         snap = state.get("repos", {}).get(repo, {})
-        free = [v for n, v in snap.items() if not v["assignee"] and not mine(repo, n, v["assignee"])]
+        free = [v for n, v in snap.items()
+                if claim_state(repo, n, v, state) == "free" and not mine(repo, n, v["assignee"])]
+        unk = sum(1 for n, v in snap.items() if claim_state(repo, n, v, state) == "unknown")
+        t_unknown += unk
         gfi = sum(1 for v in free if is_gfi(v["labels"]))
         t_open += len(snap); t_free += len(free); t_gfi += gfi
         bar = "🟢" if free else "⚪"
         rows.append(f'{bar} <b>{esc(short(repo))}</b> — {tr("pool_repo", free=len(free), open=len(snap))}'
                     + (f' · ⭐{gfi}' if gfi else ""))
     head = (tr("pool_head", free=t_free, open=t_open)
-            + (f" · ⭐{t_gfi} good-first" if t_gfi else "") + "\n")
+            + (f" · ⭐{t_gfi} good-first" if t_gfi else "")
+            + (tr("pool_unknown", n=t_unknown) if t_unknown else "") + "\n")
     return head + "\n".join(rows)
 
 
@@ -819,6 +906,12 @@ def main():
         # One claim-comment lookup per cycle at most when running tokenless, so a busy repo
         # cannot exhaust the hourly quota and blind the watcher entirely.
         budget = [8 if GH_TOKEN else 1]
+        # A separate, smaller allowance for reading historical comments. Without a token the
+        # hourly ceiling is 60 and the poll itself costs 7 per cycle, so this stays at 1: the
+        # backlog is filled over a few hours rather than blowing the quota in one pass and
+        # blinding the watcher. With a token there is room to finish it quickly.
+        back_budget = [6 if GH_TOKEN else 1]
+        quota_headroom = quota_left()
 
         for repo in REPOS:
             issues, prs, err = fetch_open(repo)
@@ -843,6 +936,12 @@ def main():
 
             if repo not in seen:
                 seen.append(repo)
+
+            # Fill in claim status for issues claimed before we started — but only with quota
+            # to spare. Reading history is the lowest-priority work here: going blind on new
+            # events to finish a backlog would trade a live signal for an old one.
+            if back_budget[0] > 0 and (quota_headroom is None or quota_headroom > 15):
+                backfill_claims(repo, new, state, back_budget)
 
         alerts += check_pr(state)
 
