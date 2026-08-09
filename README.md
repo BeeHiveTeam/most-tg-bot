@@ -57,7 +57,7 @@ tokens into a chat or a commit.
 |---|---|
 | `TG_TOKEN`, `TG_CHAT_ID` | Telegram bot token and the chat to alert |
 | `GH_TOKEN` | GitHub PAT, **public read only**, no scopes needed. Optional but strongly advised: without it GitHub allows 60 requests/hour, which forces a 10-minute poll across seven repos. With it the poll is 60s. |
-| `WATCH_PR` | a PR to watch, `owner/repo#number` |
+| `WATCH_PR` | PRs to watch, `owner/repo#number`, comma-separated. Empty follows every open PR of yours (the pool allows three at once). |
 | `MY_CLAIM` | your own claimed issue, `owner/repo#number` — kept out of the "someone is claiming this" alerts and marked as yours in `/taken` |
 | `MAINTAINERS` | comma-separated logins whose claim bookkeeping to ignore (defaults to the pool admin) |
 

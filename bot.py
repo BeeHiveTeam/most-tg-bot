@@ -258,11 +258,15 @@ def load_cfg():
             if not line or line.startswith("#") or "=" not in line:
                 continue
             k, v = line.split("=", 1)
+            v = v.strip().strip('"').strip("'")
             # Strip an inline comment: `POLL_INTERVAL=600  # every 10 min` fed "600  # every…"
             # to int(), which died at import and sent systemd into a restart loop.
-            v = v.split("#", 1)[0]
-            v = v.strip().strip('"').strip("'")
-            # A trailing "  # note" on a numeric value would crash int() later; drop it.
+            #
+            # Only " #" counts, never a bare "#". Splitting on any hash silently truncated every
+            # value that legitimately contains one — `WATCH_PR=owner/repo#42` became
+            # "owner/repo", which the PR watcher then reported as malformed, and
+            # `MY_CLAIM=owner/repo#161` became "owner/repo", which never matched an issue key,
+            # so our own claimed issue was listed as somebody else's.
             if " #" in v:
                 v = v.split(" #", 1)[0].strip()
             cfg[k.strip()] = v
@@ -288,35 +292,38 @@ if not REPOS:
 WATCH_PR = CFG.get("WATCH_PR", "").strip()
 
 
-def watched_pr(state):
+def watched_prs(state):
     """
-    Which pull request to follow.
+    Which pull requests to follow, and which configured entries were unusable.
 
-    WATCH_PR pins one explicitly. Left empty, we follow your own newest open PR in the pool,
-    found from MY_LOGIN — the poll already fetches every open PR with its author, so this costs
-    nothing extra and, unlike a pinned number, stays right when your next PR replaces this one.
+    Returns (targets, malformed). WATCH_PR pins them explicitly, comma-separated — the pool
+    allows an admitted participant three open PRs at once, so watching exactly one meant the
+    other two went unwatched and their reviews arrived as silence. Left empty, we follow every
+    open PR of yours in the pool, found from MY_LOGIN: the poll already fetches each PR with its
+    author, so this costs nothing extra and stays right as your PRs come and go.
     """
     if WATCH_PR:
-        if "#" in WATCH_PR:
-            return WATCH_PR
-        # Set but unusable. Falling through to auto-detection would quietly watch a different
-        # PR than the operator asked for, and /pr would then advise setting a value that is
-        # already there. Say so instead.
-        return f"!{WATCH_PR}"
+        targets, malformed = [], []
+        for entry in (e.strip() for e in WATCH_PR.split(",")):
+            if not entry:
+                continue
+            # Set but unusable. Silently falling back to auto-detection would watch something
+            # other than what the operator asked for, and /pr would then advise setting a value
+            # that is already there. Report it instead.
+            (targets if "#" in entry else malformed).append(entry)
+        return targets, malformed
     if not MY_LOGIN:
-        return ""
-    best = ""
-    best_created = ""
+        return [], []
+    mine = []
     for repo, prs in (state.get("prs") or {}).items():
         for num, info in prs.items():
             if (info.get("author") or "").lower() != MY_LOGIN.lower():
                 continue
-            # created_at, not the number: issue numbers are per-repo, so #7 in one repo would
-            # lose to #120 in another regardless of age.
-            created = info.get("created_at", "")
-            if created > best_created:
-                best_created, best = created, f"{repo}#{num}"
-    return best
+            mine.append((info.get("created_at", ""), f"{repo}#{num}"))
+    # Newest first, so /pr leads with what you most likely just opened. created_at, not the
+    # number: issue numbers are per-repo, so #7 in one repo would sort against #120 in another.
+    mine.sort(reverse=True)
+    return [t for _, t in mine], []
 # Pool maintainers post claim bookkeeping ("approved, it's yours", "one claimed issue at a
 # time") that can read like a claim. Their comments are never a fresh claim. Comma-separated
 # logins; defaults to the pool's admin.
@@ -496,7 +503,7 @@ def pr_snapshot(prs):
     }
 
 
-def diff_prs(repo, old, new, seeded, watched=""):
+def diff_prs(repo, old, new, seeded, watched=()):
     """
     Alert when a pull request is newly opened.
 
@@ -512,7 +519,7 @@ def diff_prs(repo, old, new, seeded, watched=""):
         if num in old:
             continue
         # Our own PR is covered in detail by check_pr; do not double-report it here.
-        if f"{repo}#{num}" == (watched or ""):
+        if f"{repo}#{num}" in (watched or ()):
             continue
         out.append(f"{tr('a_prreview')} {esc(cur['author'])}, {esc(short(repo))} #{num}\n"
                    f"{esc(cur['title'])}\nhttps://github.com/{repo}/pull/{num}")
@@ -714,49 +721,56 @@ def diff_comments(repo, old, new, budget, state):
 
 
 def check_pr(state):
-    """Watch one pull request of ours: reviews, comments, merge, CI."""
-    # Follow the target chosen LAST cycle. A merged PR disappears from state["prs"] in the
-    # same cycle that merges it, before this runs — so deciding from the fresh snapshot meant
-    # the auto-picked target silently jumped and the MERGED alert could never fire.
-    target = state.get("pr_target") or watched_pr(state)
-    state["pr_target"] = watched_pr(state)
-    if not target or "#" not in target:
-        return []
-    if state.get("pr_snapshot_of") != target:
-        # New target: the old PR\'s snapshot must not be compared against it — that produced
-        # false "+N comments" and muted the first real conflict alert.
-        state.pop("pr", None)
-        state.pop("pr_last_mergeable", None)
-        state["pr_snapshot_of"] = target
-    repo, num = target.split("#", 1)
-    pr, err = gh(f"/repos/{repo}/pulls/{num}")
-    if err:
-        return []
-    cur = {
-        "state": pr["state"],
-        "merged": bool(pr.get("merged_at")),
-        "comments": pr["comments"] + pr["review_comments"],
-        "mergeable": pr.get("mergeable"),
-    }
-    prev = state.get("pr")
-    state["pr"] = cur
-    if prev is None:
-        return []
+    """Watch each pull request of ours: reviews, comments, merge, CI."""
+    fresh, _ = watched_prs(state)
+    # Also re-check whatever we followed LAST cycle. A merged PR disappears from state["prs"]
+    # in the same cycle that merges it, before this runs — so deciding purely from the fresh
+    # snapshot meant an auto-picked target silently vanished and MERGED could never fire. One
+    # extra pass lets it fire; the target is gone from `fresh` next cycle either way.
+    targets = list(dict.fromkeys(list(state.get("pr_targets") or []) + fresh))
+    state["pr_targets"] = fresh
+    watch = state.setdefault("pr_watch", {})
+    # Drop snapshots we no longer follow, so state does not grow without bound.
+    for gone in [k for k in watch if k not in targets]:
+        watch.pop(gone, None)
+
     out = []
-    link = f"https://github.com/{repo}/pull/{num}"
-    if cur["merged"] and not prev["merged"]:
-        out.append(f"{tr('a_merged')} {esc(target)}\n{link}\n\n{tr('a_merged_note')}")
-    elif cur["state"] != prev["state"]:
-        out.append(f"{tr('a_prstate', st=esc(cur['state'].upper()))} {esc(target)}\n{link}")
-    if cur["comments"] > prev["comments"]:
-        out.append(f"{tr('a_prcomm', n=cur['comments'] - prev['comments'])} {esc(target)}\n{link}")
-    # GitHub returns mergeable=None while recomputing after a push, so a real conflict can
-    # arrive as True -> None -> False and slip past a naive prev/cur check. Track the last
-    # DEFINITE value instead of the immediately-previous one.
-    if cur["mergeable"] is False and state.get("pr_last_mergeable") is not False:
-        out.append(f"{tr('a_conflict', pr=esc(target))}\n{link}")
-    if cur["mergeable"] is not None:
-        state["pr_last_mergeable"] = cur["mergeable"]
+    for target in targets:
+        if "#" not in target:
+            continue
+        repo, num = target.split("#", 1)
+        pr, err = gh(f"/repos/{repo}/pulls/{num}")
+        if err:
+            continue
+        cur = {
+            "state": pr["state"],
+            "merged": bool(pr.get("merged_at")),
+            "comments": pr["comments"] + pr["review_comments"],
+            "mergeable": pr.get("mergeable"),
+        }
+        # Keyed by target: one shared snapshot across PRs produced false "+N comments" the
+        # moment a second PR was watched, because each was compared against the other's counts.
+        slot = watch.setdefault(target, {})
+        prev = slot.get("snap")
+        slot["snap"] = cur
+        if prev is None:
+            continue
+        link = f"https://github.com/{repo}/pull/{num}"
+        if cur["merged"] and not prev["merged"]:
+            out.append(f"{tr('a_merged')} {esc(target)}\n{link}\n\n{tr('a_merged_note')}")
+        elif cur["state"] != prev["state"]:
+            out.append(f"{tr('a_prstate', st=esc(cur['state'].upper()))} {esc(target)}\n{link}")
+        if cur["comments"] > prev["comments"]:
+            out.append(
+                f"{tr('a_prcomm', n=cur['comments'] - prev['comments'])} {esc(target)}\n{link}"
+            )
+        # GitHub returns mergeable=None while recomputing after a push, so a real conflict can
+        # arrive as True -> None -> False and slip past a naive prev/cur check. Track the last
+        # DEFINITE value instead of the immediately-previous one.
+        if cur["mergeable"] is False and slot.get("last_mergeable") is not False:
+            out.append(f"{tr('a_conflict', pr=esc(target))}\n{link}")
+        if cur["mergeable"] is not None:
+            slot["last_mergeable"] = cur["mergeable"]
     return out
 
 
@@ -894,29 +908,33 @@ def cmd_pool(state):
 
 
 def cmd_pr(state):
-    target = watched_pr(state)
-    if target.startswith("!"):
-        return tr("pr_malformed", value=esc(target[1:]))
-    if not target or "#" not in target:
-        return tr("pr_none")
-    repo, num = target.split("#", 1)
-    pr, err = gh(f"/repos/{repo}/pulls/{num}")
-    if err:
-        return tr("pr_readfail", pr=esc(target), err=esc(err))
-    checks, _ = gh(f"/repos/{repo}/commits/{pr['head']['sha']}/check-runs")
-    n_checks = (checks or {}).get("total_count", 0)
-    runs = ", ".join(f"{c['name']}: {c['conclusion'] or c['status']}"
-                     for c in (checks or {}).get("check_runs", []))
-    ci = runs if n_checks else tr("pr_ci_none")
+    targets, malformed = watched_prs(state)
+    # Report bad entries even when good ones exist, so one typo in a list is not swallowed by
+    # the PRs that happened to parse.
+    blocks = [tr("pr_malformed", value=esc(v)) for v in malformed]
+    if not targets:
+        return "\n\n".join(blocks) if blocks else tr("pr_none")
     merge = {True: tr("pr_m_ok"), False: tr("pr_m_bad"), None: tr("pr_m_wait")}
-    return tr("pr_body",
-              pr=esc(target),
-              st=esc(pr['state']),
-              mg=(tr("pr_merged") if pr.get('merged_at') else ''),
-              m=esc(merge.get(pr.get('mergeable'), str(pr.get('mergeable')))),
-              c=pr['comments'] + pr['review_comments'],
-              ci=esc(ci),
-              link=f"https://github.com/{repo}/pull/{num}")
+    for target in targets:
+        repo, num = target.split("#", 1)
+        pr, err = gh(f"/repos/{repo}/pulls/{num}")
+        if err:
+            blocks.append(tr("pr_readfail", pr=esc(target), err=esc(err)))
+            continue
+        checks, _ = gh(f"/repos/{repo}/commits/{pr['head']['sha']}/check-runs")
+        n_checks = (checks or {}).get("total_count", 0)
+        runs = ", ".join(f"{c['name']}: {c['conclusion'] or c['status']}"
+                         for c in (checks or {}).get("check_runs", []))
+        ci = runs if n_checks else tr("pr_ci_none")
+        blocks.append(tr("pr_body",
+                         pr=esc(target),
+                         st=esc(pr['state']),
+                         mg=(tr("pr_merged") if pr.get('merged_at') else ''),
+                         m=esc(merge.get(pr.get('mergeable'), str(pr.get('mergeable')))),
+                         c=pr['comments'] + pr['review_comments'],
+                         ci=esc(ci),
+                         link=f"https://github.com/{repo}/pull/{num}"))
+    return "\n\n".join(blocks)
 
 
 def cmd_rate():
@@ -1052,7 +1070,8 @@ def main():
             state["repos"][repo] = new
 
             new_prs = pr_snapshot(prs)
-            alerts += diff_prs(repo, state.get("prs", {}).get(repo, {}), new_prs, seeded, watched_pr(state))
+            alerts += diff_prs(repo, state.get("prs", {}).get(repo, {}), new_prs, seeded,
+                               watched_prs(state)[0])
             state.setdefault("prs", {})[repo] = new_prs
 
             if repo not in seen:
