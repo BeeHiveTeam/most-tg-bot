@@ -187,6 +187,9 @@ T = {
   "pool_unknown":{"en": " · {n} unchecked", "ru": " · {n} не проверено", "de": " · {n} ungeprüft"},
   "pool_repo":  {"en": "{free} of {open}", "ru": "{free} из {open}", "de": "{free} von {open}"},
 
+  "pr_malformed":{"en": "WATCH_PR is set to \"{value}\" but needs the form owner/repo#number.",
+                  "ru": "WATCH_PR задан как \"{value}\", но нужен вид owner/repo#number.",
+                  "de": "WATCH_PR ist \"{value}\", benötigt aber die Form owner/repo#number."},
   "pr_none":    {"en": "No PR watched (set WATCH_PR in config.env).", "ru": "PR не отслеживается (задайте WATCH_PR в config.env).", "de": "Kein PR beobachtet (WATCH_PR in config.env setzen)."},
   "pr_readfail":{"en": "could not read {pr}: {err}", "ru": "не удалось прочитать {pr}: {err}", "de": "{pr} nicht lesbar: {err}"},
   "pr_ci_none": {"en": "not run — awaiting maintainer approval (first PR from a fork)", "ru": "не запускался — ждём кнопки мейнтейнера (первый PR из форка)", "de": "nicht gestartet — wartet auf Maintainer-Freigabe (erster PR aus einem Fork)"},
@@ -293,8 +296,13 @@ def watched_pr(state):
     found from MY_LOGIN — the poll already fetches every open PR with its author, so this costs
     nothing extra and, unlike a pinned number, stays right when your next PR replaces this one.
     """
-    if WATCH_PR and "#" in WATCH_PR:
-        return WATCH_PR
+    if WATCH_PR:
+        if "#" in WATCH_PR:
+            return WATCH_PR
+        # Set but unusable. Falling through to auto-detection would quietly watch a different
+        # PR than the operator asked for, and /pr would then advise setting a value that is
+        # already there. Say so instead.
+        return f"!{WATCH_PR}"
     if not MY_LOGIN:
         return ""
     best = ""
@@ -887,6 +895,8 @@ def cmd_pool(state):
 
 def cmd_pr(state):
     target = watched_pr(state)
+    if target.startswith("!"):
+        return tr("pr_malformed", value=esc(target[1:]))
     if not target or "#" not in target:
         return tr("pr_none")
     repo, num = target.split("#", 1)
@@ -927,7 +937,8 @@ def cmd_rate():
 def dispatch(cmd, state):
     """Single place both commands and buttons answer from, so they cannot drift apart."""
     global _lang
-    if cmd.startswith("lang"):
+    # Exact match, not a prefix: startswith turned /private into /pr and /frees into /free.
+    if cmd == "lang":
         order = ["en", "ru", "de"]
         _lang = order[(order.index(_lang) + 1) % len(order)] if _lang in order else "en"
         state["lang"] = _lang
@@ -935,18 +946,17 @@ def dispatch(cmd, state):
         # the list the user was looking at unchanged (Telegram does not re-render old messages),
         # so the switch looked like it did nothing.
         return tr("lang_set") + "\n\n" + tr("help")
-    if cmd.startswith("free"):
+    if cmd == "free":
         return cmd_free(state)
-    if cmd.startswith("taken"):
+    if cmd == "taken":
         return cmd_taken(state)
-    if cmd.startswith("pool"):
+    if cmd == "pool":
         return cmd_pool(state)
-    if cmd.startswith("pr"):
+    if cmd == "pr":
         return cmd_pr(state)
-    if cmd.startswith("rate"):
+    if cmd == "rate":
         return cmd_rate()
     return tr("help")
-
 
 def handle_commands(state):
     """
@@ -970,10 +980,12 @@ def handle_commands(state):
         if cb:
             # Гасим «часики» первым делом: Telegram считает запрос протухшим через 10-15 с,
             # а сбор ответа по семи репозиториям может занять дольше.
-            tg("answerCallbackQuery", callback_query_id=cb.get("id", ""))
             chat = str(((cb.get("message") or {}).get("chat") or {}).get("id"))
             if chat != str(TG_CHAT):
-                continue
+                continue  # not our chat: do not even acknowledge it
+            # Clear the spinner first: Telegram treats the callback as stale after 10-15 s and
+            # collecting an answer across seven repositories can take longer.
+            tg("answerCallbackQuery", callback_query_id=cb.get("id", ""))
             data = (cb.get("data") or "").lower()
             # Дебаунс: то же нажатие не чаще раза в 5 с — гасит серию тапов по одной кнопке.
             now = time.time()
@@ -1064,10 +1076,14 @@ def main():
 
         alerts += check_pr(state)
 
-        if alerts and not first_run:
-            say("\n\n".join(alerts))
+        # Persist before sending. A crash between the two used to replay the whole batch after a
+        # restart; saving first can at worst lose one alert, and a missed message is a smaller
+        # harm than a duplicate storm that trains you to ignore them.
+        first_run_now = first_run
         first_run = False
         save_state(state)
+        if alerts and not first_run_now:
+            say("\n\n".join(alerts))
 
         # Answer commands while waiting, so /free is not stuck behind a long poll interval.
         while time.time() - started < POLL_INTERVAL:
