@@ -169,9 +169,9 @@ T = {
                  "ru": "⛔ <b>КОНФЛИКТЫ</b> на {pr} — upstream ушёл вперёд, нужен ребейз",
                  "de": "⛔ <b>KONFLIKTE</b> bei {pr} — Upstream ist weiter, Rebase nötig"},
 
-  "free_head":  {"en": "🟢 <b>FREE — {n} issues</b>\n⭐ = good first issue",
-                 "ru": "🟢 <b>СВОБОДНО — {n} задач</b>\n⭐ = good first issue",
-                 "de": "🟢 <b>FREI — {n} Issues</b>\n⭐ = good first issue"},
+  "free_head":  {"en": "🟢 <b>FREE — {n} issues</b>\n⭐ = good first issue · 🔧 = an open PR already targets it",
+                 "ru": "🟢 <b>СВОБОДНО — {n} задач</b>\n⭐ = good first issue · 🔧 = на неё уже есть открытый PR",
+                 "de": "🟢 <b>FREI — {n} Issues</b>\n⭐ = good first issue · 🔧 = ein offener PR zielt darauf"},
   "free_repo":  {"en": "(free: {n})", "ru": "(свободно: {n})", "de": "(frei: {n})"},
   "free_unknown":{"en": "\n<i>{n} more not checked yet — comments unread, claim unknown</i>",
                   "ru": "\n<i>ещё {n} не проверены — комментарии не прочитаны, заявка неизвестна</i>",
@@ -180,7 +180,9 @@ T = {
   "free_mine":  {"en": "\n<i>our claim {x} is excluded</i>", "ru": "\n<i>наша заявка {x} в список не входит</i>", "de": "\n<i>unser Anspruch {x} ist ausgenommen</i>"},
   "free_claimed":{"en": "claimed by {who}?", "ru": "заявка от {who}?", "de": "beansprucht von {who}?"},
 
-  "taken_head": {"en": "🔒 <b>TAKEN — {n} issues</b>\n", "ru": "🔒 <b>ЗАНЯТО — {n} задач</b>\n", "de": "🔒 <b>VERGEBEN — {n} Issues</b>\n"},
+  "taken_head": {"en": "🔒 <b>TAKEN — {n} issues</b>\n🔧 = an open PR already targets it\n",
+                 "ru": "🔒 <b>ЗАНЯТО — {n} задач</b>\n🔧 = на неё уже есть открытый PR\n",
+                 "de": "🔒 <b>VERGEBEN — {n} Issues</b>\n🔧 = ein offener PR zielt darauf\n"},
   "taken_us":   {"en": "US", "ru": "МЫ", "de": "WIR"},
 
   "pool_head":  {"en": "<b>MOST pool</b>\n{free} free of {open} open", "ru": "<b>Пул MOST</b>\nСвободно {free} из {open} открытых", "de": "<b>MOST-Pool</b>\n{free} frei von {open} offen"},
@@ -492,15 +494,41 @@ def fetch_open(repo, max_pages=5):
     return issues, prs, None
 
 
+# "Closes #12", "Fixes #12", "Resolves #12" — the linking GitHub itself acts on. A bare "#12"
+# is not counted: pull requests cite neighbouring issues constantly, and treating a mention as
+# a claim on the issue would bury genuinely open work under noise.
+PR_CLOSES = re.compile(r"\b(?:clos(?:e|es|ed)|fix(?:e[sd])?|resolv(?:e|es|ed))\s+#(\d+)", re.I)
+
+
 def pr_snapshot(prs):
     return {
         str(p["number"]): {
             "title": p["title"],
             "author": p["user"]["login"],
             "created_at": p.get("created_at", ""),
+            # Which issues this PR says it closes. The listing already carries the body, so
+            # knowing this costs no extra request.
+            "closes": sorted(set(PR_CLOSES.findall((p.get("body") or "") + " " + p["title"]))),
         }
         for p in prs
     }
+
+
+def open_pr_note(repo, num, state):
+    """
+    " · 🔧#157 zkasuran" when an open PR already says it closes this issue, else "".
+
+    Information, never a verdict. The pool requires a claim comment and a maintainer's approval
+    BEFORE any code, so a PR opened without one gives its author no hold on the issue — marking
+    such an issue as taken would dress a rule break as a claim and hide claimable work from us.
+    It is still worth seeing: our own #161 had a competing PR open two days before we claimed it,
+    and nothing surfaced that.
+    """
+    hits = [f"#{pr_num} {info['author']}"
+            for pr_num, info in sorted((state.get("prs", {}).get(repo) or {}).items(),
+                                       key=lambda kv: int(kv[0]))
+            if str(num) in (info.get("closes") or [])]
+    return (" · 🔧" + ", ".join(hits)) if hits else ""
 
 
 def diff_prs(repo, old, new, seeded, watched=()):
@@ -875,7 +903,8 @@ def cmd_free(state):
             tag = f" <i>[{esc(d)}]</i>" if d and not is_gfi(v["labels"]) else ""
             # No assignee, but someone claimed it in a comment (the pool approves in comments):
             # mark it so the list does not read as genuinely open.
-            rows.append(f'{star}<a href="{issue_url(repo, n)}">#{n}</a> {esc(v["title"][:64])}{tag}')
+            rows.append(f'{star}<a href="{issue_url(repo, n)}">#{n}</a> {esc(v["title"][:64])}{tag}'
+                        f'{esc(open_pr_note(repo, n, state))}')
         blocks.append("\n".join(rows))
     head = tr("free_head", n=total)
     if unknown:
@@ -904,7 +933,8 @@ def cmd_taken(state):
             # 🔒 assigned by the maintainer · 📝 claimed in a comment, not yet assigned
             mark = ("🟡" if mine(repo, n, v["assignee"])
                     else "🔒" if v["assignee"] else "📝")
-            rows.append(f'{mark} <a href="{issue_url(repo, n)}">#{n}</a> <b>{who}</b> — {esc(v["title"][:52])}')
+            rows.append(f'{mark} <a href="{issue_url(repo, n)}">#{n}</a> <b>{who}</b> — {esc(v["title"][:52])}'
+                        f'{esc(open_pr_note(repo, n, state))}')
         blocks.append("\n".join(rows))
     return tr("taken_head", n=total) + "\n".join(blocks)
 

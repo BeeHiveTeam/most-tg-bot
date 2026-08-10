@@ -31,6 +31,11 @@ Watching all of them by hand is how you learn an issue was claimed the morning a
 - ✅ **closed**
 - 🎉 **your PR merged** · 💬 **new comment on your PR** · ⛔ **your PR went conflict-dirty**
 
+`/free` and `/taken` mark an issue with 🔧 when an open PR already says it closes it. That is
+information, not a verdict: the pool wants a claim comment and a maintainer's approval before
+any code, so a PR opened without one gives its author no hold on the issue — but it is worth
+knowing before you spend your single claim slot on a duplicate.
+
 Commands: `/free` (unclaimed issues, by repo, with difficulty) · `/taken` (who holds what) ·
 `/pool` (per-repo counts) · `/pr` (the PR you are watching, and its CI) · `/rate` (GitHub quota) · `/lang` (switch language: English / Russian / German).
 Default is English; set `LANG=en|ru|de` in config or tap 🌐.
