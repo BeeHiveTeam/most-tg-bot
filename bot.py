@@ -562,29 +562,45 @@ SCAN_ERROR = "error"
 SCAN_RELEASED = "released"
 
 
+MAX_COMMENT_PAGES = 5   # 500 comments; the busiest pool issue has well under 50
+# How long a comment-derived verdict is trusted before the backfill re-reads it.
+CLAIM_RECHECK_SECONDS = 24 * 3600
+
+
 def latest_claim_comment(repo, num):
     """(claimer, text) for the newest live claim, None if there is none, SCAN_RELEASED if the
     newest signal is a release, or SCAN_ERROR when the comments could not be read at all."""
-    # newest first: the default order is oldest-first, so page 1 of a 100+-comment issue would
-    # be its OLDEST comments and a late claim or release would be invisible forever.
-    data, err = gh(f"/repos/{repo}/issues/{num}/comments?sort=created&direction=desc&per_page=100")
-    if err:
-        return SCAN_ERROR
-    if not data:
+    # This endpoint IGNORES sort/direction — verified against the live API, every variant
+    # (sort=created&direction=desc, direction alone, sort=updated) returns OLDEST first. Asking
+    # for newest-first and trusting it meant the walk below hit the oldest claim and returned
+    # it, so every verdict was the FIRST person ever to claim, and later releases and re-claims
+    # were invisible: puddleswap#1 read as zkasuran months after the maintainer released that
+    # claim and approved CalvinSkunnies. Order is ours to impose, so page through and sort.
+    collected = []
+    for page in range(1, MAX_COMMENT_PAGES + 1):
+        data, err = gh(f"/repos/{repo}/issues/{num}/comments?per_page=100&page={page}")
+        if err:
+            return SCAN_ERROR
+        collected.extend(data or [])
+        if len(data or []) < 100:
+            break
+    if not collected:
         return None
-    # Skip the pool maintainer's bookkeeping. When a claim is approved, the maintainer posts a
-    # confirmation carrying an invisible "<!-- most-claims -->" marker ("the claim is
-    # registered", "you already hold a claim on ..."). Those read like a claim but announce
-    # someone else's, so a marker comment is never itself a fresh claim.
-    for c in data:
+    collected.sort(key=lambda c: c.get("created_at") or "", reverse=True)
+    for c in collected:
         body = c.get("body") or ""
         login = (c.get("user") or {}).get("login", "")
-        # Walking newest-first: a release means everything older is stale.
+        # Newest-first: a release means everything older is stale.
         if is_release(body):
             return SCAN_RELEASED
-        # A maintainer's confirmation carries "<!-- most-claims -->", but their plain-text
-        # approvals ("approved, it's yours") do not — skip the maintainer either way.
-        if "<!-- most-claims -->" in body or login.lower() in MAINTAINERS:
+        # Skip the maintainer's bookkeeping ("the claim is registered", "you already hold a
+        # claim on ..."): it announces someone else's claim rather than making one.
+        #
+        # By login only. The "<!-- most-claims -->" marker used to be treated as proof of
+        # bookkeeping, but contributors post it too — lora-sys's genuine claims on nad-agent
+        # #12 and #46 both carry it — so that rule discarded real claims and let a months-old
+        # one stand in their place.
+        if login.lower() in MAINTAINERS:
             continue
         if is_claim(body):
             return login, body[:180]
@@ -627,8 +643,14 @@ def backfill_claims(repo, snap, state, budget):
         if budget[0] <= 0:
             break
         key = f"{repo}#{num}"
-        if key in checked or v["assignee"]:
+        if v["assignee"]:
             continue          # assigned issues need no comment scan; the field is authoritative
+        # Re-verify an old verdict. The live path only rescans when the comment count grows,
+        # which never happens for a claim that changed hands BEFORE we started watching — so a
+        # verdict formed once was permanent, and a wrong one could not heal. Cheap to redo:
+        # this is the budgeted low-priority backfill, and a handful of issues fall due per day.
+        if int(time.time()) - int(checked.get(key, 0)) < CLAIM_RECHECK_SECONDS:
+            continue
         budget[0] -= 1
         hit = latest_claim_comment(repo, num)
         if hit == SCAN_ERROR:
