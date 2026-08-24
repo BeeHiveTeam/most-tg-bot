@@ -33,7 +33,9 @@ if os.environ.get("PREFER_IPV4", "1") != "0":
     _socket.getaddrinfo = _ipv4_first
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CFG_PATH = os.path.join(HERE, "config.env")
+# Overridable so the bot can be exercised against a throwaway config instead of the one it
+# runs with. Hardcoding it meant every check had to be done against the live install.
+CFG_PATH = os.environ.get("MOST_TG_BOT_CONFIG", os.path.join(HERE, "config.env"))
 STATE_PATH = os.path.join(HERE, "state.json")
 
 # The pool, from https://most.devnads.com/. Kept explicit rather than scraped: the site is
@@ -182,6 +184,9 @@ T = {
                    "de": "⚡ Anspruchsplatz ist frei. Jetzt das nächste <b>sofort</b> beanspruchen — Issues gehen in Minuten weg."},
   "a_prstate":  {"en": "⚠️ <b>PR {st}</b>", "ru": "⚠️ <b>PR {st}</b>", "de": "⚠️ <b>PR {st}</b>"},
   "a_prcomm":   {"en": "💬 <b>PR comments: +{n}</b>", "ru": "💬 <b>Комментариев на PR: +{n}</b>", "de": "💬 <b>PR-Kommentare: +{n}</b>"},
+  "a_prreviewed":{"en": "🔎 <b>NEW REVIEW: {st}</b> by {who} on",
+                  "ru": "🔎 <b>НОВОЕ РЕВЬЮ: {st}</b> от {who} на",
+                  "de": "🔎 <b>NEUE REVIEW: {st}</b> von {who} zu"},
   "a_conflict": {"en": "⛔ <b>CONFLICTS</b> on {pr} — upstream moved, rebase needed",
                  "ru": "⛔ <b>КОНФЛИКТЫ</b> на {pr} — upstream ушёл вперёд, нужен ребейз",
                  "de": "⛔ <b>KONFLIKTE</b> bei {pr} — Upstream ist weiter, Rebase nötig"},
@@ -809,10 +814,23 @@ def check_pr(state):
         pr, err = gh(f"/repos/{repo}/pulls/{num}")
         if err:
             continue
+        # Reviews live in their own endpoint and are counted in NO field of the pull request:
+        # `comments` counts issue comments, `review_comments` counts inline ones, and a review —
+        # the thing that says APPROVED or CHANGES_REQUESTED and carries the body a maintainer
+        # actually writes — appears in neither. Watching only those two fields meant the bot stayed
+        # silent through three blocking reviews in one day and spoke only when we commented
+        # ourselves, because our own comments were the only thing incrementing the counter.
+        reviews, rerr = gh(f"/repos/{repo}/pulls/{num}/reviews")
+        latest = reviews[-1] if (not rerr and isinstance(reviews, list) and reviews) else None
         cur = {
             "state": pr["state"],
             "merged": bool(pr.get("merged_at")),
             "comments": pr["comments"] + pr["review_comments"],
+            # None, not 0, when the request failed: a fetch that did not happen must not read as
+            # "no reviews" and then as "+N" once it succeeds.
+            "reviews": None if rerr or not isinstance(reviews, list) else len(reviews),
+            "review_state": (latest or {}).get("state"),
+            "review_by": ((latest or {}).get("user") or {}).get("login"),
             "mergeable": pr.get("mergeable"),
         }
         # Keyed by target: one shared snapshot across PRs produced false "+N comments" the
@@ -830,6 +848,18 @@ def check_pr(state):
         if cur["comments"] > prev["comments"]:
             out.append(
                 f"{tr('a_prcomm', n=cur['comments'] - prev['comments'])} {esc(target)}\n{link}"
+            )
+        # A review outranks a comment: it is what blocks or unblocks the merge. Reported with its
+        # verdict and author, because "+1 review" would send us to GitHub to learn the only two
+        # things that matter.
+        if (
+            cur["reviews"] is not None
+            and prev.get("reviews") is not None
+            and cur["reviews"] > prev["reviews"]
+        ):
+            out.append(
+                f"{tr('a_prreviewed', st=esc(str(cur['review_state'] or '?')), who=esc(str(cur['review_by'] or '?')))}"
+                f" {esc(target)}\n{link}"
             )
         # GitHub returns mergeable=None while recomputing after a push, so a real conflict can
         # arrive as True -> None -> False and slip past a naive prev/cur check. Track the last
