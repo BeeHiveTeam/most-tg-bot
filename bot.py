@@ -477,8 +477,16 @@ def _split(text, limit=3900):
 
 
 def say(text, kb=True):
-    """Отправить сообщение. Кнопки цепляются к последней части длинного текста."""
+    """Send a message. Buttons attach to the last chunk of a long one.
+
+    What was sent is written to the journal as one line. Without it there is no way to tell a bot
+    that stayed silent from one that spoke and was not noticed: the journal held only errors, so an
+    empty search through it read as "no alert was sent" when it only ever meant "nothing failed".
+    The text is stripped of markup and truncated — this is an audit trail, not a copy of the chat.
+    """
     chunks = _split(text)
+    first = re.sub(r"<[^>]+>", "", chunks[0] if chunks else "").replace("\n", " ").strip()
+    print("alert: %s" % first[:160], flush=True)
     for n, chunk in enumerate(chunks):
         params = dict(chat_id=TG_CHAT, text=chunk, parse_mode="HTML",
                       disable_web_page_preview="true")
