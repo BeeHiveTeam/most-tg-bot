@@ -238,7 +238,7 @@ T = {
                         "🎉 your PR merged · 💬 comment on your PR · ⛔ conflicts\n\n"
                         "<b>Commands</b>\n"
                         "/free — what is free, by repo\n/taken — who holds what\n"
-                        "/pool — per-repo summary\n/pr — your PR and its CI\n"
+                        "/pool — per-repo summary\n/throughput — how fast OUTSIDE contributors get merged\n/pr — your PR and its CI\n"
                         "/rate — GitHub quota\n/lang — switch language\n/help — this message"),
                  "ru": ("<b>Наблюдатель за пулом MOST</b>\n"
                         "Следит за 7 репозиториями и сам присылает:\n"
@@ -247,7 +247,7 @@ T = {
                         "🎉 наш PR смержен · 💬 комментарий на PR · ⛔ конфликты\n\n"
                         "<b>Команды</b>\n"
                         "/free — что свободно, по репозиториям\n/taken — кто что держит\n"
-                        "/pool — сводка по репозиториям\n/pr — наш PR и состояние CI\n"
+                        "/pool — сводка по репозиториям\n/throughput — как быстро мержат ЧУЖИХ\n/pr — наш PR и состояние CI\n"
                         "/rate — квота GitHub\n/lang — сменить язык\n/help — это сообщение"),
                  "de": ("<b>MOST-Pool-Watcher</b>\n"
                         "Beobachtet 7 Repos und meldet:\n"
@@ -256,7 +256,7 @@ T = {
                         "🎉 dein PR gemergt · 💬 Kommentar an deinem PR · ⛔ Konflikte\n\n"
                         "<b>Befehle</b>\n"
                         "/free — was frei ist, nach Repo\n/taken — wer was hält\n"
-                        "/pool — Übersicht nach Repo\n/pr — dein PR und dessen CI\n"
+                        "/pool — Übersicht nach Repo\n/throughput — wie schnell EXTERNE gemerged werden\n/pr — dein PR und dessen CI\n"
                         "/rate — GitHub-Kontingent\n/lang — Sprache wechseln\n/help — diese Nachricht")},
   "lang_set":   {"en": "Language: English. Tap 🌐 or /lang to cycle.",
                  "ru": "Язык: русский. Нажмите 🌐 или /lang для смены.",
@@ -1014,6 +1014,59 @@ def cmd_pool(state):
     return head + "\n".join(rows)
 
 
+def cmd_throughput(state):
+    """Per repo: how fast OUTSIDE contributors get merged, and how much is free to claim.
+
+    Deliberately not the overall merge count. A repository where the maintainer merges his
+    own work all day looks fastest by that measure and tells us nothing: what decides our
+    odds is whether people who are not the owner get merged, and how long they wait. One
+    pool repo showed 30 merges at a 0h median and turned out to be 80% self-merged, with
+    the last outside merge nine days earlier.
+    """
+    import statistics, calendar
+    def _epoch(ts):
+        """GitHub timestamps are UTC Z. The bot has no datetime import and uses time.time()
+        everywhere else, so parse with the stdlib the module already relies on."""
+        return calendar.timegm(time.strptime(ts, "%Y-%m-%dT%H:%M:%SZ"))
+    now = time.time()
+    rows = []
+    for repo in REPOS:
+        owner = repo.split("/")[0]
+        # gh() returns (data, error) and never raises; a failed repo must not blank the
+        # whole report, so it degrades to its own row.
+        data, err = gh(f"/search/issues?q=repo:{repo}+type:pr+is:merged&sort=updated&order=desc&per_page=50")
+        if err or not isinstance(data, dict) or "items" not in data:
+            rows.append(f'⚪ <b>{esc(short(repo))}</b> — no data ({esc(str(err)[:40]) if err else "unexpected shape"})')
+            continue
+        items = data["items"]
+        ext = [i for i in items if i["user"]["login"].lower() != owner.lower()]
+        durs = []
+        for i in ext:
+            try:
+                durs.append((_epoch(i["closed_at"]) - _epoch(i["created_at"])) / 3600)
+            except Exception:
+                pass
+        # Free issues come from the state the poller already maintains, so this command
+        # costs one API call per repo rather than re-fetching issues.
+        snap = state.get("repos", {}).get(repo, {})
+        free = sum(1 for n, v in snap.items()
+                   if claim_state(repo, n, v, state) == "free"
+                   and not mine(repo, n, v["assignee"]))
+        share = round(100 * len(ext) / len(items)) if items else 0
+        med = f"{statistics.median(durs):.0f}h" if durs else "—"
+        last = ext[0]["closed_at"][:10] if ext else "—"
+        try:
+            stale = bool(ext) and (now - _epoch(ext[0]["closed_at"])) > 7 * 86400
+        except Exception:
+            stale = False
+        bar = "⚪" if not free else ("🟡" if stale or share < 40 else "🟢")
+        rows.append(f'{bar} <b>{esc(short(repo))}</b> — {len(ext)} ext ({share}%) · median {med} '
+                    f'· free {free} · last {last}')
+    return ("<b>Outside-contributor throughput</b>\n"
+            "Only merges by someone other than the repo owner count here.\n\n"
+            + "\n".join(rows))
+
+
 def cmd_pr(state):
     targets, malformed = watched_prs(state)
     # Report bad entries even when good ones exist, so one typo in a list is not swallowed by
@@ -1077,6 +1130,8 @@ def dispatch(cmd, state):
         return cmd_taken(state)
     if cmd == "pool":
         return cmd_pool(state)
+    if cmd in ("throughput", "speed"):
+        return cmd_throughput(state)
     if cmd == "pr":
         return cmd_pr(state)
     if cmd == "rate":
