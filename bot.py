@@ -530,6 +530,51 @@ def fetch_open(repo, max_pages=5):
 PR_CLOSES = re.compile(r"\b(?:clos(?:e|es|ed)|fix(?:e[sd])?|resolv(?:e|es|ed))\s+#(\d+)", re.I)
 
 
+def confirm_gone(repo, nums, cap=25):
+    """
+    Of `nums`, which ones GitHub really reports as no longer open.
+
+    The list endpoint intermittently answers with only part of the repo. Observed live on
+    nad-agent 09.09.2026: one response in nine carried the three open pull requests and none
+    of the three open issues, with no error and HTTP 200. Everything absent from such a reply
+    reads as closed, and the next good reply reads as new, so one glitch produces a false
+    CLOSED and then a false NEW for every item it dropped - #86 flapped twice that morning,
+    and moss #196 was announced as a new PR for review a second time six hours later.
+
+    So an omission is not evidence. Ask about each missing item directly; only a state the
+    API states outright counts. Anything we could not check is kept as still open, because a
+    missed close is a smaller harm than a fabricated one.
+
+    `cap` bounds the cost: if a whole repo seems to vanish at once, that is the broken
+    response itself, and nothing is confirmed.
+    """
+    if not nums or len(nums) > cap:
+        return set()
+    gone = set()
+    for num in nums:
+        data, err = gh(f"/repos/{repo}/issues/{num}")
+        if err or not isinstance(data, dict):
+            continue
+        if data.get("state") and data["state"] != "open":
+            gone.add(num)
+    return gone
+
+
+def keep_unconfirmed(repo, old, new, kind):
+    """Put back anything that only disappeared because the listing was partial."""
+    missing = [n for n in old if n not in new]
+    if not missing:
+        return new
+    gone = confirm_gone(repo, missing)
+    restored = {n: old[n] for n in missing if n not in gone}
+    if restored:
+        print(f"{repo}: listing omitted {len(restored)} still-open {kind} "
+              f"({', '.join('#' + n for n in sorted(restored, key=int))}) - kept", flush=True)
+        new = dict(new)
+        new.update(restored)
+    return new
+
+
 def pr_snapshot(prs):
     return {
         str(p["number"]): {
@@ -1224,15 +1269,34 @@ def main():
             seen = state.setdefault("seen", [])
             seeded = repo in seen
 
-            new = snapshot(issues)
             old = state["repos"].get(repo, {})
+            old_prs = state.get("prs", {}).get(repo, {})
+            if seeded:
+                # A partial listing is common enough to matter: six were caught across five
+                # repos in the first five minutes of watching for them. Ask the listing once
+                # more before interrogating each missing item - a second opinion costs one
+                # request, per-item confirmation costs one per item, and moss alone can drop
+                # twenty-five issues in a single bad reply.
+                miss_i = [n for n in old if n not in snapshot(issues)]
+                miss_p = [n for n in old_prs if n not in pr_snapshot(prs)]
+                if miss_i or miss_p:
+                    r_issues, r_prs, r_err = fetch_open(repo)
+                    # Take the fuller of the two readings. Never the shorter one: that is the
+                    # reply we already distrust.
+                    if not r_err and len(r_issues) >= len(issues) and len(r_prs) >= len(prs):
+                        issues, prs = r_issues, r_prs
+            new = snapshot(issues)
+            if seeded:
+                new = keep_unconfirmed(repo, old, new, "issue")
             alerts += diff_repo(repo, old, new, seeded)
             if seeded:
                 alerts += diff_comments(repo, old, new, budget, state)
             state["repos"][repo] = new
 
             new_prs = pr_snapshot(prs)
-            alerts += diff_prs(repo, state.get("prs", {}).get(repo, {}), new_prs, seeded,
+            if seeded:
+                new_prs = keep_unconfirmed(repo, old_prs, new_prs, "pull request")
+            alerts += diff_prs(repo, old_prs, new_prs, seeded,
                                watched_prs(state)[0])
             state.setdefault("prs", {})[repo] = new_prs
 
