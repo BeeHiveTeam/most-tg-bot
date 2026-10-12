@@ -13,7 +13,7 @@ Pure stdlib (urllib, json). Single-threaded loop:
 
 Config: <dir>/config.env   State: <dir>/state.json
 """
-import json, os, ssl, sys, time, urllib.error, urllib.parse, urllib.request
+import copy, json, os, ssl, sys, time, traceback, urllib.error, urllib.parse, urllib.request
 
 # --- IPv4 вперёд ---------------------------------------------------------------
 # api.telegram.org отдаёт и A, и AAAA. На хосте с глобальным IPv6, у которого маршрут до
@@ -579,7 +579,8 @@ def pr_snapshot(prs):
     return {
         str(p["number"]): {
             "title": p["title"],
-            "author": p["user"]["login"],
+            # GitHub documents the user as nullable; a deleted account comes back as "ghost".
+            "author": (p.get("user") or {}).get("login", ""),
             "created_at": p.get("created_at", ""),
             # Which issues this PR says it closes. The listing already carries the body, so
             # knowing this costs no extra request.
@@ -642,7 +643,7 @@ def snapshot(issues):
             # the verdict costs nothing and closes that hole.
             # An owner describing their own issue is not claiming it, however the text reads.
             "body_claim": is_claim(i.get("body"))
-            and not is_release(i.get("body"))
+            and not is_release(_unquoted(i.get("body")))
             and ((i.get("user") or {}).get("login", "").lower() not in MAINTAINERS),
         }
         for i in issues
@@ -693,8 +694,10 @@ def latest_claim_comment(repo, num):
     for c in collected:
         body = c.get("body") or ""
         login = (c.get("user") or {}).get("login", "")
-        # Newest-first: a release means everything older is stale.
-        if is_release(body):
+        # Newest-first: a release means everything older is stale. Unquoted, like the claim check:
+        # a claim that quotes someone else's "Releasing this claim" is a claim, and reading the
+        # quotation as a release showed a held issue as free.
+        if is_release(_unquoted(body)):
             return SCAN_RELEASED
         # Skip the maintainer's bookkeeping ("the claim is registered", "you already hold a
         # claim on ..."): it announces someone else's claim rather than making one.
@@ -1084,7 +1087,7 @@ def cmd_throughput(state):
             rows.append(f'⚪ <b>{esc(short(repo))}</b> — no data ({esc(str(err)[:40]) if err else "unexpected shape"})')
             continue
         items = data["items"]
-        ext = [i for i in items if i["user"]["login"].lower() != owner.lower()]
+        ext = [i for i in items if ((i.get("user") or {}).get("login") or "").lower() != owner.lower()]
         durs = []
         for i in ext:
             try:
@@ -1259,76 +1262,92 @@ def main():
         back_budget = [6 if GH_TOKEN else 1]
         quota_headroom = quota_left()
 
-        for repo in REPOS:
-            issues, prs, err = fetch_open(repo)
-            if err:
-                print(f"{repo}: {err}", flush=True)
-                if "rate limit" in err.lower() or "403" in err:
-                    break
-                continue
-            seen = state.setdefault("seen", [])
-            seeded = repo in seen
+        # One bad response — a field GitHub left null, a shape this code did not expect — used to
+        # escape main(), and the unit gives up after five restarts in 300 s: one such item in the
+        # pool kept the watcher down for good. The cycle now runs on a copy of the state it can
+        # restore, so a failed cycle neither dies nor saves a half-updated state, and the next
+        # cycle retries it.
+        state_before = copy.deepcopy(state)
+        saved = False
+        try:
+            for repo in REPOS:
+                issues, prs, err = fetch_open(repo)
+                if err:
+                    print(f"{repo}: {err}", flush=True)
+                    if "rate limit" in err.lower() or "403" in err:
+                        break
+                    continue
+                seen = state.setdefault("seen", [])
+                seeded = repo in seen
 
-            old = state["repos"].get(repo, {})
-            old_prs = state.get("prs", {}).get(repo, {})
-            if seeded:
-                # A partial listing is common enough to matter: six were caught across five
-                # repos in the first five minutes of watching for them. Ask the listing once
-                # more before interrogating each missing item - a second opinion costs one
-                # request, per-item confirmation costs one per item, and moss alone can drop
-                # twenty-five issues in a single bad reply.
-                miss_i = [n for n in old if n not in snapshot(issues)]
-                miss_p = [n for n in old_prs if n not in pr_snapshot(prs)]
-                if miss_i or miss_p:
-                    r_issues, r_prs, r_err = fetch_open(repo)
-                    # Take the fuller of the two readings. Never the shorter one: that is the
-                    # reply we already distrust.
-                    if not r_err and len(r_issues) >= len(issues) and len(r_prs) >= len(prs):
-                        issues, prs = r_issues, r_prs
-            new = snapshot(issues)
-            if seeded:
-                new = keep_unconfirmed(repo, old, new, "issue")
-            alerts += diff_repo(repo, old, new, seeded)
-            if seeded:
-                alerts += diff_comments(repo, old, new, budget, state)
-            state["repos"][repo] = new
+                old = state["repos"].get(repo, {})
+                old_prs = state.get("prs", {}).get(repo, {})
+                if seeded:
+                    # A partial listing is common enough to matter: six were caught across five
+                    # repos in the first five minutes of watching for them. Ask the listing once
+                    # more before interrogating each missing item - a second opinion costs one
+                    # request, per-item confirmation costs one per item, and moss alone can drop
+                    # twenty-five issues in a single bad reply.
+                    miss_i = [n for n in old if n not in snapshot(issues)]
+                    miss_p = [n for n in old_prs if n not in pr_snapshot(prs)]
+                    if miss_i or miss_p:
+                        r_issues, r_prs, r_err = fetch_open(repo)
+                        # Take the fuller of the two readings. Never the shorter one: that is the
+                        # reply we already distrust.
+                        if not r_err and len(r_issues) >= len(issues) and len(r_prs) >= len(prs):
+                            issues, prs = r_issues, r_prs
+                new = snapshot(issues)
+                if seeded:
+                    new = keep_unconfirmed(repo, old, new, "issue")
+                alerts += diff_repo(repo, old, new, seeded)
+                if seeded:
+                    alerts += diff_comments(repo, old, new, budget, state)
+                state["repos"][repo] = new
 
-            new_prs = pr_snapshot(prs)
-            if seeded:
-                new_prs = keep_unconfirmed(repo, old_prs, new_prs, "pull request")
-            alerts += diff_prs(repo, old_prs, new_prs, seeded,
-                               watched_prs(state)[0])
-            state.setdefault("prs", {})[repo] = new_prs
+                new_prs = pr_snapshot(prs)
+                if seeded:
+                    new_prs = keep_unconfirmed(repo, old_prs, new_prs, "pull request")
+                alerts += diff_prs(repo, old_prs, new_prs, seeded,
+                                   watched_prs(state)[0])
+                state.setdefault("prs", {})[repo] = new_prs
 
-            if repo not in seen:
-                seen.append(repo)
+                if repo not in seen:
+                    seen.append(repo)
 
-            # P2-9: verdicts must not outlive their issues. A closed issue's flag would make a
-            # reopened one read as taken; an assignee supersedes any comment-claim bookkeeping.
-            prefix = f"{repo}#"
-            for store in ("claim_flags", "claim_checked", "claim_released"):
-                d = state.get(store, {})
-                for key in [k for k in d if k.startswith(prefix)]:
-                    num = key[len(prefix):]
-                    if num not in new or (store != "claim_checked" and new[num]["assignee"]):
-                        d.pop(key, None)
+                # P2-9: verdicts must not outlive their issues. A closed issue's flag would make a
+                # reopened one read as taken; an assignee supersedes any comment-claim bookkeeping.
+                prefix = f"{repo}#"
+                for store in ("claim_flags", "claim_checked", "claim_released"):
+                    d = state.get(store, {})
+                    for key in [k for k in d if k.startswith(prefix)]:
+                        num = key[len(prefix):]
+                        if num not in new or (store != "claim_checked" and new[num]["assignee"]):
+                            d.pop(key, None)
 
-            # Fill in claim status for issues claimed before we started — but only with quota
-            # to spare. Reading history is the lowest-priority work here: going blind on new
-            # events to finish a backlog would trade a live signal for an old one.
-            if back_budget[0] > 0 and (quota_headroom is None or quota_headroom > 15):
-                backfill_claims(repo, new, state, back_budget)
+                # Fill in claim status for issues claimed before we started — but only with quota
+                # to spare. Reading history is the lowest-priority work here: going blind on new
+                # events to finish a backlog would trade a live signal for an old one.
+                if back_budget[0] > 0 and (quota_headroom is None or quota_headroom > 15):
+                    backfill_claims(repo, new, state, back_budget)
 
-        alerts += check_pr(state)
+            alerts += check_pr(state)
 
-        # Persist before sending. A crash between the two used to replay the whole batch after a
-        # restart; saving first can at worst lose one alert, and a missed message is a smaller
-        # harm than a duplicate storm that trains you to ignore them.
-        first_run_now = first_run
-        first_run = False
-        save_state(state)
-        if alerts and not first_run_now:
-            say("\n\n".join(alerts))
+            # Persist before sending. A crash between the two used to replay the whole batch after a
+            # restart; saving first can at worst lose one alert, and a missed message is a smaller
+            # harm than a duplicate storm that trains you to ignore them.
+            first_run_now = first_run
+            first_run = False
+            save_state(state)
+            saved = True
+            if alerts and not first_run_now:
+                say("\n\n".join(alerts))
+        except Exception:
+            # Roll back only what was not saved yet. Once the new state is on disk, restoring the
+            # old one in memory would make the next cycle replay alerts that were already sent.
+            print("poll cycle failed:\n" + traceback.format_exc(), flush=True)
+            if not saved:
+                state.clear()
+                state.update(state_before)
 
         # Answer commands while waiting, so /free is not stuck behind a long poll interval.
         while time.time() - started < POLL_INTERVAL:
