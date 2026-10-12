@@ -82,8 +82,12 @@ existing config is kept and `state.json` is never touched.
 Unattended, or on a box with no terminal:
 
 ```
-TG_TOKEN=... TG_CHAT_ID=... [GH_TOKEN=...] [MY_LOGIN=...] [BOT_LANG=en] bash install.sh
+TG_TOKEN=... TG_CHAT_ID=... [MOST_GH_TOKEN=...] [MY_LOGIN=...] [BOT_LANG=en] bash install.sh
 ```
+
+`MOST_GH_TOKEN`, not `GH_TOKEN`: that one belongs to the GitHub CLI and is often already set to a
+token with far wider scopes, which the installer will not pick up by accident. In `config.env` the
+key is still `GH_TOKEN`.
 
 Prefer to read it first? `curl -fsSLO .../install.sh && less install.sh && bash install.sh`.
 
@@ -114,9 +118,12 @@ As a systemd service — copy the code and the unit into place first (the unit r
 ```
 sudo mkdir -p /opt/most-tg-bot
 sudo cp bot.py config.env /opt/most-tg-bot/
+# The bot runs as the unit's User= (`ubuntu` unless you edit it): it reads config.env and writes
+# state.json here. `sudo cp` made both root-owned, and the service died on PermissionError.
+sudo chown -R ubuntu:ubuntu /opt/most-tg-bot && sudo chmod 600 /opt/most-tg-bot/config.env
 sudo cp most-tg-bot.service /etc/systemd/system/
 # edit the unit if needed: User= (defaults to `ubuntu`) and the paths above must match
-sudo systemctl enable --now most-tg-bot
+sudo systemctl enable most-tg-bot && sudo systemctl restart most-tg-bot
 sudo systemctl status most-tg-bot
 ```
 
